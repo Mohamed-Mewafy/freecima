@@ -2,21 +2,21 @@ import os
 import re
 import json
 import time
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
 BASE_DOMAIN = "https://cfree.icu"
 CATEGORY_URL = f"{BASE_DOMAIN}/category.php?cat=arabic-moives"
 JSON_FILE = "arabic_movies.json"
 
-# إعداد Headers متكاملة ليبدو الطلب كأنه من متصفح حقيقي
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
-    "Referer": "https://cfree.icu/",
-    "Connection": "keep-alive"
-}
+# إنشاء سكرابر يتجاوز الحماية
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'darwin',
+        'desktop': True
+    }
+)
 
 def clean_movie_title(raw_title):
     words_to_remove = ["مشاهدة", "فيلم", "مسلسل", "انيميشن", "مترجم", "مدبلج", "HD", "4K", "1080p", "720p"]
@@ -39,21 +39,22 @@ def save_movie_to_json(movie_data):
             json.dump(data, f, ensure_ascii=False, indent=4)
         print(f" 💾 [تم الحفظ في JSON]: {movie_data['clean_title']}")
 
-def crawl_cfree():
-    print("🚀 بدء السحب باستخدام الطلبات المباشرة (Requests + Custom Headers)...")
+def crawl_cfree_with_cloudscraper():
+    print("🚀 بدء السحب باستخدام Cloudscraper وحفظ النتائج...")
     
     for page_num in range(1, 3):
         url = f"{CATEGORY_URL}&page={page_num}"
         print(f"\n--- فحص الصفحة {page_num} ---")
         
         try:
-            response = requests.get(url, headers=HEADERS, timeout=15)
+            response = scraper.get(url, timeout=15)
             if response.status_code != 200:
                 print(f" ❌ خطأ في الاتصال بالسيرفر، الكود: {response.status_code}")
                 continue
                 
             soup = BeautifulSoup(response.text, 'html.parser')
             
+            # استخراج روابط الأفلام
             movie_links = set()
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag['href']
@@ -66,7 +67,7 @@ def crawl_cfree():
             for link in movie_links:
                 try:
                     play_url = link.replace("watch.php", "play.php")
-                    movie_res = requests.get(play_url, headers=HEADERS, timeout=15)
+                    movie_res = scraper.get(play_url, timeout=15)
                     if movie_res.status_code != 200:
                         continue
                         
@@ -95,7 +96,7 @@ def crawl_cfree():
                     }
                     
                     save_movie_to_json(movie_info)
-                    time.sleep(1.5)
+                    time.sleep(1)
                 except Exception as e:
                     print(f" ⚠️ خطأ أثناء معالجة الفيلم: {e}")
                     
@@ -105,4 +106,4 @@ def crawl_cfree():
     print("\n🎉 تم الانتهاء وحفظ النتائج بنجاح!")
 
 if __name__ == "__main__":
-    crawl_cfree()
+    crawl_cfree_with_cloudscraper()
