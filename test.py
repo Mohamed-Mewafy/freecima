@@ -47,32 +47,41 @@ def crawl_pages_sequentially():
             for link in unique_links:
                 try:
                     play_url = link.replace("watch.php", "play.php")
-                    download_page_url = link.replace("watch.php", "download.php")
                     
+                    # 1. التحقق أولاً من وجود الفيلم في Supabase بناءً على رابط المشاهدة (أو باستخدام play_url/watch_url المتوقع)
+                    # ملاحظة: سنفترض أننا نخزن رابط المشاهدة أو يمكننا التحقق عبر الرابط الرئيسي
+                    existing_movie = supabase.table("arabic_movies").select("id").eq("watch_url", play_url).execute()
+                    
+                    if existing_movie.data and len(existing_movie.data) > 0:
+                        print(f"⏩ الفيلم موجود مسبقاً في قاعدة البيانات، جاري التخطي...", flush=True)
+                        continue
+
+                    # إذا لم يكن موجوداً، نكمل عملية السحب
+                    download_page_url = link.replace("watch.php", "download.php")
                     page.goto(play_url, wait_until="networkidle")
                     
-                    # 1. العنوان والسنة
+                    # 2. العنوان والسنة
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                     title = clean_title(raw_title)
                     year = extract_year(raw_title)
                     
-                    # 2. التقييم
+                    # 3. التقييم
                     rating = "غير متوفر"
                     rating_el = page.locator('text=/\\d\\.\\d\\/10/').first
                     if rating_el.count() > 0:
                         rating = rating_el.text_content().strip()
                     
-                    # 3. الوصف
+                    # 4. الوصف
                     description = "لا يوجد وصف"
                     desc_el = page.locator('.story').first
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
                         
-                    # 4. رابط المشاهدة الرئيسي (السيرفر الأساسي)
+                    # 5. رابط المشاهدة الرئيسي (السيرفر الأساسي)
                     iframe = page.locator("iframe").first
                     primary_watch_url = iframe.get_attribute("src") if iframe.count() > 0 else ""
 
-                    # 5. سحب وتصفية سيرفرات التحميل بدقة من صفحة download
+                    # 6. سحب وتصفية سيرفرات التحميل بدقة من صفحة download
                     download_links = {}
                     try:
                         page.goto(download_page_url, wait_until="networkidle")
@@ -93,14 +102,13 @@ def crawl_pages_sequentially():
                             
                             is_unwanted = any(keyword in href for keyword in unwanted_keywords)
                             
-                            # استبعاد الروابط غير المرغوب فيها وروابط الموقع الداخلية الرئيسية
                             if href and not is_unwanted and "cfree.icu" not in href and "cima.today" not in href and ("http" in href or "magnet" in href):
                                 server_name = txt.split('\n')[0] if txt else "Server"
                                 download_links[server_name] = href
                     except Exception as ex:
                         print(f"⚠️ تعذر سحب روابط التحميل: {ex}")
 
-                    # 6. البوستر
+                    # 7. البوستر
                     poster_url = ""
                     meta_img = page.locator('meta[property="og:image"]')
                     if meta_img.count() > 0:
@@ -114,7 +122,7 @@ def crawl_pages_sequentially():
 
                     movie_payload = {
                         "title": title,
-                        "watch_url": primary_watch_url,  
+                        "watch_url": play_url,  # تم توحيد حفظه هنا ليكون مطابقاً للبحث
                         "poster_url": poster_url,
                         "year": year,
                         "description": description,
