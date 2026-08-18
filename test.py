@@ -36,7 +36,7 @@ def crawl_pages_sequentially():
             # جلب روابط الأفلام في الصفحة الحالية
             links = page.eval_on_selector_all('a[href*="watch.php?vid="]', "elements => elements.map(e => e.href)")
             
-            # إذا كانت الصفحة فارغة ولا توجد بها أفلام، فهذا يعني أننا وصلنا لنهاية الموقع ونوقف السكربت
+            # إذا كانت الصفحة فارغة، فهذا يعني أننا وصلنا لنهاية الموقع
             if not links or len(links) == 0:
                 print(f"🏁 وصلت إلى نهاية الصفحات (الصفحة {page_num} فارغة). تم الانتهاء بنجاح!", flush=True)
                 break
@@ -72,7 +72,7 @@ def crawl_pages_sequentially():
                     iframe = page.locator("iframe").first
                     primary_watch_url = iframe.get_attribute("src") if iframe.count() > 0 else ""
 
-                    # 5. سحب سيرفرات التحميل من صفحة download
+                    # 5. سحب وتصفية سيرفرات التحميل بدقة من صفحة download
                     download_links = {}
                     try:
                         page.goto(download_page_url, wait_until="networkidle")
@@ -81,10 +81,19 @@ def crawl_pages_sequentially():
                             "elements => elements.map(e => ({text: e.innerText.trim(), href: e.href}))"
                         )
                         
+                        unwanted_keywords = [
+                            "category.php", "watch.php", "play.php", "register.php", 
+                            "login.php", "movies.php", "episodes.php", "newvideos.php", 
+                            "topvideos.php", "moslslat.php", "#", "javascript"
+                        ]
+                        
                         for item in all_download_anchors:
                             href = item['href']
                             txt = item['text']
-                            if href and "cfree.icu" not in href and ("http" in href or "magnet" in href):
+                            
+                            is_unwanted = any(keyword in href for keyword in unwanted_keywords)
+                            
+                            if href and not is_unwanted and "cfree.icu" not in href and ("http" in href or "magnet" in href):
                                 server_name = txt.split('\n')[0] if txt else "Server"
                                 download_links[server_name] = href
                     except Exception as ex:
@@ -114,7 +123,7 @@ def crawl_pages_sequentially():
 
                     # الحفظ في جدول arabic_movies
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="watch_url").execute()
-                    print(f"✅ تم حفظ: {title}", flush=True)
+                    print(f"✅ تم حفظ الفيلم مع سيرفرات نظيفة: {title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
