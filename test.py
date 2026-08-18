@@ -39,23 +39,33 @@ def crawl_with_playwright():
                     # 2. رابط السيرفر
                     server_url = get_server_url(page)
                     
-                    # 3. رابط البوستر الحقيقي (البحث عن الصورة داخل تفاصيل الفيلم وليس الشعار العام)
+                    # 3. جلب رابط البوستر (الـ poster الخاص بالفيلم)
                     poster_url = ""
-                    # محاولة جلب الصورة البارزة للفيلم
-                    poster_element = page.locator('.story img, .poster img, .movie-img img, .details img').first
-                    if poster_element.count() > 0:
-                        poster_url = poster_element.get_attribute("src") or poster_element.get_attribute("data-src") or ""
-                        if poster_url and not poster_url.startswith('http'):
-                            poster_url = BASE_DOMAIN + "/" + poster_url.lstrip('/')
+                    # البحث عن الصورة البارزة في منطقة بوستر الفيلم أو الحاويات الخاصة به
+                    poster_locators = ['.poster img', '.movie-poster img', '.single-poster img', 'div.poster img', '.details img']
+                    for loc in poster_locators:
+                        img_el = page.locator(loc).first
+                        if img_el.count() > 0:
+                            src = img_el.get_attribute("src") or img_el.get_attribute("data-src")
+                            if src:
+                                if not src.startswith('http'):
+                                    poster_url = BASE_DOMAIN + "/" + src.lstrip('/')
+                                else:
+                                    poster_url = src
+                                break
 
-                    # 4. القصة أو الوصف الحقيقي (البحث عن فقرة القصة في صفحة الفيلم)
+                    # 4. جلب القصة الحقيقية للفيلم وتجنب رسائل السيرفر العامة
                     description = "لا يوجد وصف"
-                    # عادة ما تكون القصة داخل div يصف قصة الفيلم أو فقرة تفصيلية
-                    desc_elements = page.locator('p')
-                    for i in range(desc_elements.count()):
-                        txt = desc_elements.nth(i).text_content().strip()
-                        if "قصة الفيلم" in txt or "تدور الأحداث" in txt or len(txt) > 50:
-                            description = txt
+                    p_locators = ['.story p', '.movie-story p', '.desc p', 'div.story', 'p']
+                    for loc in p_locators:
+                        elements = page.locator(loc)
+                        for i in range(elements.count()):
+                            txt = elements.nth(i).text_content().strip()
+                            # نتأكد أن النص هو قصة الفيلم وليس رسالة السيرفر التلقائية
+                            if len(txt) > 40 and "اذا كان السيرفر" not in txt and "مشاهدة وتحميل" not in txt:
+                                description = txt
+                                break
+                        if description != "لا يوجد وصف":
                             break
 
                     movie_info = {
@@ -68,7 +78,7 @@ def crawl_with_playwright():
                     }
                     
                     movies_data.append(movie_info)
-                    print(f"✅ تم سحب بيانات: {title}", flush=True)
+                    print(f"✅ تم سحب: {title}", flush=True)
                     
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
@@ -77,7 +87,7 @@ def crawl_with_playwright():
 
     with open(JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump(movies_data, f, ensure_ascii=False, indent=4)
-    print("🎉 تم التحديث والحفظ بنجاح!")
+    print("🎉 تم الحفظ بنجاح!")
 
 if __name__ == "__main__":
     crawl_with_playwright()
