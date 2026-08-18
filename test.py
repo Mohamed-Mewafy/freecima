@@ -2,21 +2,20 @@ import os
 import re
 import json
 import time
-import cloudscraper
+import requests
 from bs4 import BeautifulSoup
 
 BASE_DOMAIN = "https://cfree.icu"
 CATEGORY_URL = f"{BASE_DOMAIN}/category.php?cat=arabic-moives"
 JSON_FILE = "arabic_movies.json"
 
-# إنشاء سكرابر يتجاوز الحماية
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'darwin',
-        'desktop': True
-    }
-)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+    "Referer": "https://cfree.icu/",
+    "Connection": "keep-alive"
+}
 
 def clean_movie_title(raw_title):
     words_to_remove = ["مشاهدة", "فيلم", "مسلسل", "انيميشن", "مترجم", "مدبلج", "HD", "4K", "1080p", "720p"]
@@ -37,24 +36,25 @@ def save_movie_to_json(movie_data):
         data.append(movie_data)
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f" 💾 [تم الحفظ في JSON]: {movie_data['clean_title']}")
+        # استخدام flush=True لضمان ظهور الطباعة فوراً في الـ Logs
+        print(f"💾 [تم الحفظ لحظياً]: {movie_data['clean_title']}", flush=True)
+    else:
+        print(f"⏭️ الفيلم موجود مسبقاً: {movie_data['clean_title']}", flush=True)
 
-def crawl_cfree_with_cloudscraper():
-    print("🚀 بدء السحب باستخدام Cloudscraper وحفظ النتائج...")
+def crawl_cfree():
+    print("🚀 بدء السحب الفوري...", flush=True)
     
     for page_num in range(1, 3):
         url = f"{CATEGORY_URL}&page={page_num}"
-        print(f"\n--- فحص الصفحة {page_num} ---")
+        print(f"\n--- جاري فحص الصفحة رقم {page_num} ---", flush=True)
         
         try:
-            response = scraper.get(url, timeout=15)
+            response = requests.get(url, headers=HEADERS, timeout=15)
             if response.status_code != 200:
-                print(f" ❌ خطأ في الاتصال بالسيرفر، الكود: {response.status_code}")
+                print(f"❌ خطأ في الاتصال بالسيرفر: {response.status_code}", flush=True)
                 continue
                 
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # استخراج روابط الأفلام
             movie_links = set()
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag['href']
@@ -62,12 +62,12 @@ def crawl_cfree_with_cloudscraper():
                     full_link = href if href.startswith('http') else BASE_DOMAIN + "/" + href.lstrip('/')
                     movie_links.add(full_link)
                     
-            print(f"تم العثور على {len(movie_links)} رابط في هذه الصفحة.")
+            print(f"تم العثور على {len(movie_links)} فيلم في هذه الصفحة.", flush=True)
             
             for link in movie_links:
                 try:
                     play_url = link.replace("watch.php", "play.php")
-                    movie_res = scraper.get(play_url, timeout=15)
+                    movie_res = requests.get(play_url, headers=HEADERS, timeout=15)
                     if movie_res.status_code != 200:
                         continue
                         
@@ -95,15 +95,16 @@ def crawl_cfree_with_cloudscraper():
                         "category_type": "أفلام عربية"
                     }
                     
+                    # حفظ الفيلم فوراً في الملف
                     save_movie_to_json(movie_info)
                     time.sleep(1)
                 except Exception as e:
-                    print(f" ⚠️ خطأ أثناء معالجة الفيلم: {e}")
+                    print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
                     
         except Exception as e:
-            print(f" ❌ خطأ في فتح الصفحة: {e}")
+            print(f"❌ خطأ في فتح الصفحة: {e}", flush=True)
 
-    print("\n🎉 تم الانتهاء وحفظ النتائج بنجاح!")
+    print("\n🎉 تم الانتهاء من العمليات بالكامل!", flush=True)
 
 if __name__ == "__main__":
-    crawl_cfree_with_cloudscraper()
+    crawl_cfree()
