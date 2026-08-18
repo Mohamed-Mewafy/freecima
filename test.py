@@ -1,110 +1,63 @@
-import os
-import re
 import json
 import time
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 BASE_DOMAIN = "https://cfree.icu"
 CATEGORY_URL = f"{BASE_DOMAIN}/category.php?cat=arabic-moives"
 JSON_FILE = "arabic_movies.json"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
-    "Referer": "https://cfree.icu/",
-    "Connection": "keep-alive"
-}
+def get_server_url(page):
+    # محاولة إيجاد رابط السيرفر داخل الـ iframe أو المشغل
+    try:
+        # البحث عن أي iframe قد يحتوي على رابط الفيديو
+        iframe = page.locator("iframe").first
+        if iframe.count() > 0:
+            return iframe.get_attribute("src")
+    except:
+        pass
+    return None
 
-def clean_movie_title(raw_title):
-    words_to_remove = ["مشاهدة", "فيلم", "مسلسل", "انيميشن", "مترجم", "مدبلج", "HD", "4K", "1080p", "720p"]
-    for word in words_to_remove:
-        raw_title = re.sub(rf'\b{word}\b', '', raw_title, flags=re.IGNORECASE)
-    return re.sub(r'\s+', ' ', raw_title).strip()
-
-def save_movie_to_json(movie_data):
-    data = []
-    if os.path.exists(JSON_FILE):
-        try:
-            with open(JSON_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            data = []
-            
-    if not any(m.get('watch_url') == movie_data['watch_url'] for m in data):
-        data.append(movie_data)
-        with open(JSON_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        # استخدام flush=True لضمان ظهور الطباعة فوراً في الـ Logs
-        print(f"💾 [تم الحفظ لحظياً]: {movie_data['clean_title']}", flush=True)
-    else:
-        print(f"⏭️ الفيلم موجود مسبقاً: {movie_data['clean_title']}", flush=True)
-
-def crawl_cfree():
-    print("🚀 بدء السحب الفوري...", flush=True)
+def crawl_with_playwright():
+    movies_data = []
     
-    for page_num in range(1, 3):
-        url = f"{CATEGORY_URL}&page={page_num}"
-        print(f"\n--- جاري فحص الصفحة رقم {page_num} ---", flush=True)
-        
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=15)
-            if response.status_code != 200:
-                print(f"❌ خطأ في الاتصال بالسيرفر: {response.status_code}", flush=True)
-                continue
-                
-            soup = BeautifulSoup(response.text, 'html.parser')
-            movie_links = set()
-            for a_tag in soup.find_all('a', href=True):
-                href = a_tag['href']
-                if 'watch.php?vid=' in href:
-                    full_link = href if href.startswith('http') else BASE_DOMAIN + "/" + href.lstrip('/')
-                    movie_links.add(full_link)
-                    
-            print(f"تم العثور على {len(movie_links)} فيلم في هذه الصفحة.", flush=True)
+    with sync_playwright() as p:
+        # تشغيل المتصفح في وضع headless (ضروري لـ GitHub Actions)
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        for page_num in range(1, 2):  # صفحة واحدة للتجربة
+            url = f"{CATEGORY_URL}&page={page_num}"
+            page.goto(url, wait_until="networkidle")
             
-            for link in movie_links:
+            # استخراج روابط الأفلام
+            links = page.eval_on_selector_all('a[href*="watch.php?vid="]', "elements => elements.map(e => e.href)")
+            
+            for link in list(set(links))[:5]: # أول 5 أفلام للتجربة
                 try:
                     play_url = link.replace("watch.php", "play.php")
-                    movie_res = requests.get(play_url, headers=HEADERS, timeout=15)
-                    if movie_res.status_code != 200:
-                        continue
-                        
-                    movie_soup = BeautifulSoup(movie_res.text, 'html.parser')
+                    page.goto(play_url, wait_until="networkidle")
                     
-                    title_elem = movie_soup.select_one('h1') or movie_soup.select_one('title')
-                    title = title_elem.text.strip() if title_elem else "بدون عنوان"
-                    
-                    poster_img = movie_soup.select_one('.poster img') or movie_soup.select_one('img')
-                    poster = ""
-                    if poster_img:
-                        poster = poster_img.get('data-src') or poster_img.get('src') or ""
-                        if poster and not poster.startswith('http'):
-                            poster = BASE_DOMAIN + "/" + poster.lstrip('/')
-
-                    desc_elem = movie_soup.select_one('.story') or movie_soup.select_one('p')
-                    desc = desc_elem.text.strip() if desc_elem else "لا يوجد وصف"
+                    # استخراج البيانات
+                    title = page.locator('h1').first.text_content().strip()
+                    server_url = get_server_url(page)
                     
                     movie_info = {
                         "title": title,
-                        "clean_title": clean_movie_title(title),
                         "watch_url": play_url,
-                        "poster_url": poster,
-                        "description": desc,
-                        "category_type": "أفلام عربية"
+                        "server_url": server_url
                     }
                     
-                    # حفظ الفيلم فوراً في الملف
-                    save_movie_to_json(movie_info)
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
+                    movies_data.append(movie_info)
+                    print(f"✅ تم سحب: {title} | الرابط: {server_url}", flush=True)
                     
-        except Exception as e:
-            print(f"❌ خطأ في فتح الصفحة: {e}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ خطأ في فيلم: {e}")
+        
+        browser.close()
 
-    print("\n🎉 تم الانتهاء من العمليات بالكامل!", flush=True)
+    # حفظ الملف
+    with open(JSON_FILE, 'w', encoding='utf-8') as f:
+        json.dump(movies_data, f, ensure_ascii=False, indent=4)
 
 if __name__ == "__main__":
-    crawl_cfree()
+    crawl_with_playwright()
