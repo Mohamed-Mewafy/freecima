@@ -3,7 +3,7 @@ import re
 from playwright.sync_api import sync_playwright
 from supabase import create_client, Client
 
-# سحب المفاتيح بأمان من بيئة العمل
+# سحب المفاتيح بأمان من بيئة العمل في GitHub Secrets
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -93,7 +93,8 @@ def crawl_pages_sequentially():
                             
                             is_unwanted = any(keyword in href for keyword in unwanted_keywords)
                             
-                            if href and not is_unwanted and "cfree.icu" not in href and ("http" in href or "magnet" in href):
+                            # استبعاد الروابط غير المرغوب فيها وروابط الموقع الداخلية الرئيسية
+                            if href and not is_unwanted and "cfree.icu" not in href and "cima.today" not in href and ("http" in href or "magnet" in href):
                                 server_name = txt.split('\n')[0] if txt else "Server"
                                 download_links[server_name] = href
                     except Exception as ex:
@@ -123,7 +124,7 @@ def crawl_pages_sequentially():
 
                     # الحفظ في جدول arabic_movies
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="watch_url").execute()
-                    print(f"✅ تم حفظ الفيلم مع سيرفرات نظيفة: {title}", flush=True)
+                    print(f"✅ تم حفظ الفيلم بنجاح: {title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
