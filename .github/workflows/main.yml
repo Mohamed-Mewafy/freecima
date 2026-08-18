@@ -1,0 +1,33 @@
+name: Movie Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # يعمل تلقائياً يومياً الساعة 12 منتصف الليل
+  workflow_dispatch: # يسمح لك بتشغيله يدوياً من زر Run workflow
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Scraper
+        run: python test.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add arabic_movies.json
+          git commit -m "Update scraped movies" || exit 0
+          git push
