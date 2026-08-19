@@ -75,51 +75,58 @@ def crawl_pages_sequentially():
                         description = desc_el.text_content().strip()
 
                     # =========================================================================
-                    # المرور على أزرار السيرفرات والضغط عليها واحداً تلو الآخر لسحب رابط الـ iframe الخاص بكل سيرفر
+                    # استهداف دقيق لأزرار سيرفرات المشاهدة فقط (واستبعاد أزرار الإغلاق وتسجيل الدخول)
                     # =========================================================================
                     watch_servers = {}
                     primary_watch_url = ""
                     
                     try:
-                        # تحديد الأزرار الخاصة بالسيرفرات أعلى مشغل الفيديو
-                        server_buttons = page.locator('button, div[class*="server"] a, div[class*="server"] button, .servers-list button, .servers-list a')
-                        count = server_buttons.count()
+                        # البحث عن الأزرار الموجودة داخل منطقة العرض فقط وتصفية الكلمات غير المرغوبة
+                        server_buttons = page.locator('button, a').all()
                         
-                        # جمع أسماء الأزرار المتاحة أولاً لتجنب تغير العناصر أثناء اللูป
                         servers_info = []
-                        for i in range(count):
-                            btn = server_buttons.nth(i)
-                            btn_text = btn.text_content().strip()
-                            if btn_text and len(btn_text) < 20: # استبعاد النصوص الطويلة
-                                servers_info.append((i, btn_text))
-
-                        # الضغط على كل زر وسحب رابط الـ iframe الذي يظهر بعده مباشرة
-                        for idx, s_name in servers_info:
+                        for btn in server_buttons:
                             try:
-                                target_btn = server_buttons.nth(idx)
-                                target_btn.click(timeout=3000)
-                                time.sleep(0.8) # انتظار تحميل سيرفر العرض داخل الـ iframe
+                                if not btn.is_visible():
+                                    continue
+                                btn_text = btn.text_content().strip()
+                                # استبعاد الأزرار العامة مثل تسجيل الدخول، إغلاق، البحث، إلخ
+                                unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK"]
+                                if not btn_text or len(btn_text) > 15 or any(w in btn_text for w in unwanted_texts):
+                                    continue
+                                    
+                                # التأكد أن الزر يقع بالقرب من منطقة المشاهدة أو الـ iframe
+                                servers_info.append((btn, btn_text))
+                            except:
+                                continue
+
+                        # النقر على كل سيرفر واستخراج رابط الـ iframe المرتبط به
+                        for btn, s_name in servers_info:
+                            try:
+                                btn.click(timeout=2000)
+                                time.sleep(0.7) # انتظار استجابة السيرفر وتغيير الـ iframe
                                 
                                 iframe = page.locator("iframe").first
                                 if iframe.count() > 0:
                                     iframe_src = iframe.get_attribute("src")
-                                    if iframe_src:
+                                    if iframe_src and "http" in iframe_src:
                                         watch_servers[s_name] = iframe_src
                                         if not primary_watch_url:
                                             primary_watch_url = iframe_src
-                            except Exception as btn_ex:
-                                print(f"⚠️ تعذر النقر على سيرفر {s_name}: {btn_ex}")
+                            except Exception as click_ex:
+                                # تجاوز أي زر يفشل في النقر دون توقف السكربت
+                                continue
                                 
                     except Exception as ex:
-                        print(f"⚠️ خطأ عام أثناء التفاعل مع سيرفرات المشاهدة: {ex}")
+                        print(f"⚠️ خطأ أثناء تتبع سيرفرات المشاهدة: {ex}")
 
-                    # إذا لم يتم رصد أزرار تفاعلية، نأخذ الـ iframe الافتراضي كاحتياطي
+                    # احتياطي: لو لم يتم التقاط أزرار، خذ رابط الـ iframe الافتراضي
                     if not primary_watch_url:
                         iframe = page.locator("iframe").first
                         if iframe.count() > 0:
                             primary_watch_url = iframe.get_attribute("src") or ""
 
-                    # سحب سيرفرات التحميل الجديدة
+                    # سحب سيرفرات التحميل
                     download_links = {}
                     try:
                         page.goto(download_page_url, wait_until="domcontentloaded", timeout=45000)
@@ -152,7 +159,7 @@ def crawl_pages_sequentially():
 
                     direct_links_payload = {
                         "primary_watch": primary_watch_url,
-                        "watch_servers": watch_servers, # يتم تحديثها بالكامل هنا بالروابط الحية الجديدة
+                        "watch_servers": watch_servers,
                         "download_servers": download_links
                     }
 
@@ -167,7 +174,7 @@ def crawl_pages_sequentially():
                     }
 
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="title").execute()
-                    print(f"🔄 تم تحديث السيرفرات بالكامل وحفظ الفيلم: {title}", flush=True)
+                    print(f"🔄 تم تحديث السيرفرات بالكامل وحفظ الفيلم: {title} (عدد السيرفرات: {len(watch_servers)})", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
