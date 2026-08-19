@@ -59,47 +59,59 @@ def crawl_pages_sequentially():
             for link in unique_links:
                 try:
                     play_url = link.replace("watch.php", "play.php")
-                    
-                    # 1. التحقق أولاً من وجود الفيلم في Supabase عبر رابط المشاهدة
-                    existing_movie = supabase.table("arabic_movies").select("id").eq("watch_url", play_url).execute()
-                    
-                    if existing_movie.data and len(existing_movie.data) > 0:
-                        print(f"⏩ الفيلم موجود مسبقاً (برابطه)، جاري التخطي...", flush=True)
-                        continue
-
                     download_page_url = link.replace("watch.php", "download.php")
                     
-                    # فتح صفحة الفيلم مع استخدام domcontentloaded لتجنب مشاكل التايم أوت
+                    # فتح صفحة المشاهدة لجلب أحدث البيانات والروابط
                     page.goto(play_url, wait_until="domcontentloaded", timeout=60000)
                     
-                    # 2. العنوان والسنة
+                    # 1. العنوان والسنة
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                     title = clean_title(raw_title)
                     year = extract_year(raw_title)
                     
-                    # 3. التحقق الاحتياطي بال title
-                    existing_by_title = supabase.table("arabic_movies").select("id").eq("title", title).execute()
-                    if existing_by_title.data and len(existing_by_title.data) > 0:
-                        print(f"⏩ الفيلم موجود مسبقاً (بالعنوان: {title})، جاري التخطي...", flush=True)
-                        continue
-
-                    # 4. التقييم
+                    # 2. التقييم
                     rating = "غير متوفر"
                     rating_el = page.locator('text=/\\d\\.\\d\\/10/').first
                     if rating_el.count() > 0:
                         rating = rating_el.text_content().strip()
                     
-                    # 5. الوصف
+                    # 3. الوصف
                     description = "لا يوجد وصف"
                     desc_el = page.locator('.story').first
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
                         
-                    # 6. رابط المشاهدة الرئيسي
+                    # 4. رابط المشاهدة الرئيسي (الافتراضي)
                     iframe = page.locator("iframe").first
                     primary_watch_url = iframe.get_attribute("src") if iframe.count() > 0 else ""
 
-                    # 7. سحب سيرفرات التحميل
+                    # 5. سحب جميع سيرفرات المشاهدة المحدثة
+                    watch_servers = {}
+                    try:
+                        server_elements = page.eval_on_selector_all(
+                            'a[href*="vid="], .servers-list a, .server-item, button[data-url], .play-servers button, div[class*="server"] a, div[class*="server"] button',
+                            """elements => elements.map(e => ({
+                                name: e.innerText.trim() || e.getAttribute('title') || 'Server',
+                                href: e.href || e.getAttribute('data-url') || e.getAttribute('data-link') || ''
+                            }))"""
+                        )
+                        
+                        if not server_elements:
+                            server_elements = page.eval_on_selector_all(
+                                'div.servers-btns a, div.servers a, ul.servers-list li a',
+                                "elements => elements.map(e => ({name: e.innerText.trim(), href: e.href}))"
+                            )
+
+                        for s in server_elements:
+                            s_name = clean_title(s['name']) if s['name'] else "Server"
+                            s_href = s['href']
+                            if s_href and "http" in s_href:
+                                watch_servers[s_name] = s_href
+                                
+                    except Exception as ex:
+                        print(f"⚠️ تعذر استخراج بعض سيرفرات المشاهدة: {ex}")
+
+                    # 6. سحب سيرفرات التحميل
                     download_links = {}
                     try:
                         page.goto(download_page_url, wait_until="domcontentloaded", timeout=45000)
@@ -126,7 +138,7 @@ def crawl_pages_sequentially():
                     except Exception as ex:
                         print(f"⚠️ تعذر سحب روابط التحميل لهذا الفيلم: {ex}")
 
-                    # 8. البوستر
+                    # 7. البوستر
                     poster_url = ""
                     meta_img = page.locator('meta[property="og:image"]')
                     if meta_img.count() > 0:
@@ -134,6 +146,7 @@ def crawl_pages_sequentially():
 
                     direct_links_payload = {
                         "primary_watch": primary_watch_url,
+                        "watch_servers": watch_servers,
                         "download_servers": download_links
                     }
 
@@ -147,8 +160,10 @@ def crawl_pages_sequentially():
                         "direct_links": direct_links_payload
                     }
 
+                    # استخدام الـ upsert مع الاعتماد على watch_url كـ conflict key
+                    # سيقوم السكربت بإضافة الفيلم لو جديد، أو تحديث روابطه وبياناته لو موجود مسبقاً
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="watch_url").execute()
-                    print(f"✅ تم حفظ الفيلم بنجاح: {title}", flush=True)
+                    print(f"🔄 تم تحديث/حفظ الفيلم بنجاح: {title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
