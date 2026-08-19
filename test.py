@@ -137,7 +137,7 @@ def crawl_pages_sequentially():
                         "download_servers": download_links
                     }
 
-5                    movie_payload = {
+                    movie_payload = {
                         "title": title,
                         "watch_url": play_url,  
                         "poster_url": poster_url,
@@ -147,7 +147,6 @@ def crawl_pages_sequentially():
                         "direct_links": direct_links_payload
                     }
 
-                    # تم تعديل on_conflict لتطابق القيد الموجود في جدول Supabase (title)
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="title").execute()
                     print(f"🔄 تم تحديث/حفظ الفيلم بنجاح: {title}", flush=True)
 
