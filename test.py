@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from playwright.sync_api import sync_playwright
 from supabase import create_client, Client
 
@@ -72,35 +73,53 @@ def crawl_pages_sequentially():
                     desc_el = page.locator('.story').first
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
-                        
-                    iframe = page.locator("iframe").first
-                    primary_watch_url = iframe.get_attribute("src") if iframe.count() > 0 else ""
 
+                    # =========================================================================
+                    # المرور على أزرار السيرفرات والضغط عليها واحداً تلو الآخر لسحب رابط الـ iframe الخاص بكل سيرفر
+                    # =========================================================================
                     watch_servers = {}
+                    primary_watch_url = ""
+                    
                     try:
-                        server_elements = page.eval_on_selector_all(
-                            'a[href*="vid="], .servers-list a, .server-item, button[data-url], .play-servers button, div[class*="server"] a, div[class*="server"] button',
-                            """elements => elements.map(e => ({
-                                name: e.innerText.trim() || e.getAttribute('title') || 'Server',
-                                href: e.href || e.getAttribute('data-url') || e.getAttribute('data-link') || ''
-                            }))"""
-                        )
+                        # تحديد الأزرار الخاصة بالسيرفرات أعلى مشغل الفيديو
+                        server_buttons = page.locator('button, div[class*="server"] a, div[class*="server"] button, .servers-list button, .servers-list a')
+                        count = server_buttons.count()
                         
-                        if not server_elements:
-                            server_elements = page.eval_on_selector_all(
-                                'div.servers-btns a, div.servers a, ul.servers-list li a',
-                                "elements => elements.map(e => ({name: e.innerText.trim(), href: e.href}))"
-                            )
+                        # جمع أسماء الأزرار المتاحة أولاً لتجنب تغير العناصر أثناء اللูป
+                        servers_info = []
+                        for i in range(count):
+                            btn = server_buttons.nth(i)
+                            btn_text = btn.text_content().strip()
+                            if btn_text and len(btn_text) < 20: # استبعاد النصوص الطويلة
+                                servers_info.append((i, btn_text))
 
-                        for s in server_elements:
-                            s_name = clean_title(s['name']) if s['name'] else "Server"
-                            s_href = s['href']
-                            if s_href and "http" in s_href:
-                                watch_servers[s_name] = s_href
+                        # الضغط على كل زر وسحب رابط الـ iframe الذي يظهر بعده مباشرة
+                        for idx, s_name in servers_info:
+                            try:
+                                target_btn = server_buttons.nth(idx)
+                                target_btn.click(timeout=3000)
+                                time.sleep(0.8) # انتظار تحميل سيرفر العرض داخل الـ iframe
+                                
+                                iframe = page.locator("iframe").first
+                                if iframe.count() > 0:
+                                    iframe_src = iframe.get_attribute("src")
+                                    if iframe_src:
+                                        watch_servers[s_name] = iframe_src
+                                        if not primary_watch_url:
+                                            primary_watch_url = iframe_src
+                            except Exception as btn_ex:
+                                print(f"⚠️ تعذر النقر على سيرفر {s_name}: {btn_ex}")
                                 
                     except Exception as ex:
-                        print(f"⚠️ تعذر استخراج بعض سيرفرات المشاهدة: {ex}")
+                        print(f"⚠️ خطأ عام أثناء التفاعل مع سيرفرات المشاهدة: {ex}")
 
+                    # إذا لم يتم رصد أزرار تفاعلية، نأخذ الـ iframe الافتراضي كاحتياطي
+                    if not primary_watch_url:
+                        iframe = page.locator("iframe").first
+                        if iframe.count() > 0:
+                            primary_watch_url = iframe.get_attribute("src") or ""
+
+                    # سحب سيرفرات التحميل الجديدة
                     download_links = {}
                     try:
                         page.goto(download_page_url, wait_until="domcontentloaded", timeout=45000)
@@ -133,7 +152,7 @@ def crawl_pages_sequentially():
 
                     direct_links_payload = {
                         "primary_watch": primary_watch_url,
-                        "watch_servers": watch_servers,
+                        "watch_servers": watch_servers, # يتم تحديثها بالكامل هنا بالروابط الحية الجديدة
                         "download_servers": download_links
                     }
 
@@ -148,7 +167,7 @@ def crawl_pages_sequentially():
                     }
 
                     supabase.table("arabic_movies").upsert(movie_payload, on_conflict="title").execute()
-                    print(f"🔄 تم تحديث/حفظ الفيلم بنجاح: {title}", flush=True)
+                    print(f"🔄 تم تحديث السيرفرات بالكامل وحفظ الفيلم: {title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
