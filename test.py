@@ -71,7 +71,7 @@ def crawl_series():
         page.set_default_timeout(25000)
 
         page_num = 1
-        print("\n🚀 === بدء السحب الفائق السرعة لجميع السيرفرات ===", flush=True)
+        print("\n🚀 === بدء السحب المتوازن والسريع لكافة السيرفرات ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
@@ -132,12 +132,12 @@ def crawl_series():
                     unique_episodes = list(set(episode_links))
 
                     ep_page = browser.new_page()
-                    ep_page.set_default_timeout(20000)
+                    ep_page.set_default_timeout(25000)
 
                     for ep_link in unique_episodes:
                         try:
                             play_url = ep_link.replace("watch.php", "play.php")
-                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=20000)
+                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=25000)
                             
                             ep_raw_title = ep_page.locator('h1').first.text_content().strip() if ep_page.locator('h1').count() > 0 else "حلقة"
                             ep_number = extract_episode_number(ep_raw_title)
@@ -146,26 +146,25 @@ def crawl_series():
                             streaming_links_list = []
                             primary_watch_url = ""
 
-                            # قائمة النصوص المستبعدة لتجنب الضغط على أزرار القوائم العامة
-                            unwanted_texts = [
-                                "تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", 
-                                "مشاهدة الآن", "تحميل", "Download", "الصفحة الرئيسية", 
-                                "أحدث المسلسلات", "أحدث الأفلام", "الحلقات", "الرئيسية", "المسلسلات"
-                            ]
+                            # استهداف محدد ودقيق لقائمة السيرفرات فقط
+                            server_elements = ep_page.locator('.WatchServersList li, .servers-list li, ul.servers-list button, ul.servers-list a, .WatchServers li').all()
 
-                            server_elements = ep_page.locator('.WatchServersList li, .servers-list li, ul.servers-list button, ul.servers-list a, div.server-btn').all()
+                            if not server_elements:
+                                server_elements = ep_page.locator('div[class*="server"] button, div[class*="server"] a, li[data-url], li[data-embed]').all()
 
                             for btn in server_elements:
                                 try:
                                     s_name = btn.text_content().strip()
                                     clean_sname = re.sub(r'\s+', ' ', s_name).strip()
                                     
-                                    if not clean_sname or len(clean_sname) > 25 or any(w.lower() in clean_sname.lower() for w in unwanted_texts):
+                                    # إزالة النصوص الإدارية الشائعة فقط
+                                    unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "مشاهدة الآن", "تحميل", "Download"]
+                                    if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_texts):
                                         continue
 
-                                    # ضغطة سريعة مع تقليل الانتظار لـ 0.3 ثانية
+                                    # تنفيذ ضغطة الحدث مع انتظار متوازن (0.5s) لتحديث الـ iframe
                                     btn.dispatch_event('click')
-                                    time.sleep(0.3)
+                                    time.sleep(0.5)
 
                                     iframe = ep_page.locator("iframe").first
                                     if iframe.count() > 0:
