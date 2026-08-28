@@ -71,7 +71,7 @@ def crawl_series():
         page.set_default_timeout(30000)
 
         page_num = 1
-        print("\n🚀 === بدء السحب واقتناص سيرفرات المشاهدة ===", flush=True)
+        print("\n🚀 === بدء سحب كافة سيرفرات المشاهدة المتاحة ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
@@ -79,8 +79,7 @@ def crawl_series():
             
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            except Exception as e:
-                print(f"⚠️ فشل تحميل الصفحة {page_num}، جاري التخطي...", flush=True)
+            except Exception:
                 page_num += 1
                 continue
             
@@ -133,12 +132,12 @@ def crawl_series():
                     unique_episodes = list(set(episode_links))
 
                     ep_page = browser.new_page()
-                    ep_page.set_default_timeout(20000)
+                    ep_page.set_default_timeout(25000)
 
                     for ep_link in unique_episodes:
                         try:
-                            play_url = ep_link.replace("watch.php", "play.php")
-                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=20000)
+                            # زيارة رابط مشاهدة الحلقة الأساسي لاستخراج جميع الأزرار
+                            ep_page.goto(ep_link, wait_until="domcontentloaded", timeout=25000)
                             
                             ep_raw_title = ep_page.locator('h1').first.text_content().strip() if ep_page.locator('h1').count() > 0 else "حلقة"
                             ep_number = extract_episode_number(ep_raw_title)
@@ -147,16 +146,23 @@ def crawl_series():
                             streaming_links_list = []
                             primary_watch_url = ""
 
-                            # 1. استخراج الروابط المباشرة المخزنة في attributes الأزرار (أسرع وأضمن طريقة في cima.land)
-                            data_server_elements = ep_page.locator('[data-url], [data-watch], [data-link], .WatchServersList li, .servers-list li, .WatchServers li').all()
+                            # 1. التفتيش عن عناصر قائمة السيرفرات في الصفحة (سواء كانت أزرار أو عناصر li)
+                            server_elements = ep_page.locator('.WatchServersList li, .servers-list li, .WatchServers li, [data-url], [data-embed]').all()
                             
-                            for el in data_server_elements:
+                            if not server_elements:
+                                server_elements = ep_page.locator('ul.servers-list button, ul.servers-list a, div.server-btn').all()
+
+                            for el in server_elements:
                                 try:
                                     s_name = el.text_content().strip()
                                     clean_sname = re.sub(r'\s+', ' ', s_name).strip()
                                     
-                                    # استخراج الرابط المباشر إن وجد في attributes
-                                    direct_embed = el.get_attribute('data-url') or el.get_attribute('data-watch') or el.get_attribute('data-link')
+                                    unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "مشاهدة الآن", "تحميل", "Download"]
+                                    if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_texts):
+                                        continue
+
+                                    # فحص ما إذا كان الرابط موجود كـ Attribute بدون الحاجة للضغط
+                                    direct_embed = el.get_attribute('data-url') or el.get_attribute('data-embed') or el.get_attribute('data-link')
                                     
                                     if direct_embed and 'http' in direct_embed:
                                         watch_servers[clean_sname] = direct_embed
@@ -165,9 +171,9 @@ def crawl_series():
                                         if not primary_watch_url:
                                             primary_watch_url = direct_embed
                                     else:
-                                        # 2. النقر الفعلي في حال عدم وجود الرابط كـ attribute
-                                        el.click(force=True, timeout=1000)
-                                        time.sleep(0.5)
+                                        # الضغط على العنصر لتغيير الـ iframe وجلب السيرفر
+                                        el.click(force=True, timeout=1200)
+                                        time.sleep(0.6)
                                         
                                         iframe = ep_page.locator("iframe").first
                                         if iframe.count() > 0:
@@ -182,13 +188,13 @@ def crawl_series():
                                 except Exception:
                                     continue
 
-                            # 3. خطة احتياطية في حال عدم العثور على أزرار: أخذ الـ Iframe الرئيسي في الصفحة
-                            if not primary_watch_url:
+                            # 2. خطة احتياطية: إذا لم يجد أزراراً، يسحب كل الـ iframes الموجودة
+                            if not watch_servers:
                                 iframes = ep_page.locator("iframe").all()
                                 for idx, iframe in enumerate(iframes):
                                     src = iframe.get_attribute("src") or iframe.get_attribute("data-src") or ""
                                     if src and "http" in src and not any(bad in src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
-                                        server_label = f"سيرفر رئيسي {idx + 1}"
+                                        server_label = f"سيرفر {idx + 1}"
                                         watch_servers[server_label] = src
                                         if src not in streaming_links_list:
                                             streaming_links_list.append(src)
@@ -206,14 +212,14 @@ def crawl_series():
                                 "season_number": 1,
                                 "episode_number": ep_number,
                                 "title": ep_raw_title,
-                                "watch_url": play_url,
+                                "watch_url": ep_link,
                                 "direct_links": direct_links_payload
                             }
                             
                             supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
-                            print(f"      ✔️ حلقة {ep_number}: تمت الإضافة بـ ({len(watch_servers)}) سيرفر", flush=True)
+                            print(f"      ✔️ حلقة {ep_number}: تمت إضافة ({len(watch_servers)}) سيرفرات -> [{', '.join(watch_servers.keys())}]", flush=True)
 
-                        except Exception as ep_err:
+                        except Exception:
                             continue
                     
                     ep_page.close()
