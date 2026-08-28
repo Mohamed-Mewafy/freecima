@@ -35,7 +35,6 @@ def extract_episode_number(title):
     return int(nums[0]) if nums else 1
 
 def get_best_poster(page):
-    """استخراج رابط البوستر بدقة عالية"""
     try:
         poster_selectors = [
             '.poster img', '.seriesBanner img', '.thumbnail img',
@@ -68,19 +67,18 @@ def get_best_poster(page):
 def crawl_series():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # فتح صفحة مستقلة للملاحة الرئيسية
         page = browser.new_page()
-        page.set_default_timeout(60000)
+        page.set_default_timeout(30000)
 
         page_num = 1
-        print("\n🚀 === بدء السحب الشامل (استخراج كل سيرفرات المشاهدة + البوستر) ===", flush=True)
+        print("\n🚀 === بدء السحب السريع والشامل (معالجة الحلقات والسيرفرات) ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
             url = f"{SERIES_CATEGORY_URL}?page={page_num}" if page_num > 1 else SERIES_CATEGORY_URL
             
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 print(f"⚠️ فشل تحميل الصفحة {page_num}، جاري التخطي...", flush=True)
                 page_num += 1
@@ -91,18 +89,15 @@ def crawl_series():
                 print(f"🏁 وصلت إلى نهاية الصفحات عند الصفحة {page_num}", flush=True)
                 break
 
-            unique_links = list(set(links))
-
-            for link in unique_links:
+            for link in list(set(links)):
                 try:
-                    page.goto(link, wait_until="domcontentloaded", timeout=60000)
+                    page.goto(link, wait_until="domcontentloaded", timeout=30000)
                     
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                     series_title = clean_title(raw_title)
                     if not series_title:
                         continue
 
-                    # فحص وجود المسلسل
                     existing = supabase.table("tv_series").select("id").eq("title", series_title).execute()
                     if existing.data and len(existing.data) > 0:
                         print(f"⏩ المسلسل موجود مسبقاً، تم التخطي: {series_title}", flush=True)
@@ -131,64 +126,57 @@ def crawl_series():
                     series_id = res_insert.data[0]['id']
                     print(f"🎬 تم إدخال المسلسل: {series_title}", flush=True)
 
-                    # جلب جميع روابط الحلقات
-                    episode_links = page.eval_on_selector_all('a[href*="watch.php?vid="], a[href*="play.php"]', "elements => elements.map(e => e.href)")
+                    # استخراج روابط الحلقات بمحددات شاملة لتفادي إغفال أي حلقة
+                    episode_links = page.eval_on_selector_all(
+                        'a[href*="watch.php"], a[href*="play.php"], a[href*="episode"]', 
+                        "elements => elements.map(e => e.href)"
+                    )
                     unique_episodes = list(set(episode_links))
+                    print(f"   📌 وُجد {len(unique_episodes)} حلقة للمسلسل", flush=True)
 
-                    # صفحة جديدة للحلقات لضمان عدم حدوث تعارض أثناء الضغط على السيرفرات
                     ep_page = browser.new_page()
-                    ep_page.set_default_timeout(60000)
+                    ep_page.set_default_timeout(20000)
 
                     for ep_link in unique_episodes:
                         try:
                             play_url = ep_link.replace("watch.php", "play.php")
-                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=60000)
+                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=20000)
                             
                             ep_raw_title = ep_page.locator('h1').first.text_content().strip() if ep_page.locator('h1').count() > 0 else "حلقة"
                             ep_number = extract_episode_number(ep_raw_title)
                             
-                            # =========================================================
-                            # المنطق المجرب من السكربت القديم لجلب كااااافة السيرفرات
-                            # =========================================================
                             watch_servers = {}
                             streaming_links_list = []
                             primary_watch_url = ""
 
-                            # جمع عناصر الأزرار في الصفحة
-                            server_buttons = ep_page.locator('button, a, li').all()
+                            # استهداف محدد ودقيق جداً لأزرار السيرفرات فقط لمنع التجميد
+                            server_buttons = ep_page.locator('.servers-list li, .watch-servers li, ul.servers-list button, ul.servers-list a, .server-btn').all()
                             
-                            servers_info = []
-                            unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "مشاهدة الآن", "تحميل الآن", "تحميل", "Download"]
-                            
+                            if not server_buttons:
+                                # محدد احتياطي مباشر للأزرار ذات الصلة فقط
+                                server_buttons = ep_page.locator('button[data-url], li[data-link], a[data-url]').all()
+
                             for btn in server_buttons:
                                 try:
                                     if not btn.is_visible():
                                         continue
-                                    btn_text = btn.text_content().strip()
+                                    s_name = btn.text_content().strip()
                                     
-                                    if not btn_text or len(btn_text) > 20 or any(w in btn_text for w in unwanted_texts):
+                                    unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "مشاهدة الآن", "تحميل", "Download"]
+                                    if not s_name or len(s_name) > 20 or any(w in s_name for w in unwanted_texts):
                                         continue
-                                        
-                                    # فلترة تمنع تكرار الأزرار غير المتعلقة بالسيرفرات
-                                    servers_info.append((btn, btn_text))
-                                except:
-                                    continue
 
-                            # الضغط على كل سيرفر لاستخراج الـ iframe
-                            for btn, s_name in servers_info:
-                                try:
-                                    btn.click(timeout=2000)
-                                    time.sleep(0.7)  # وقت كافٍ لـ AJAX لتغيير الـ iframe
+                                    # النقر بقوة ونطاق زمني سريع
+                                    btn.click(force=True, timeout=1000)
+                                    time.sleep(0.4)
                                     
                                     iframe = ep_page.locator("iframe").first
                                     if iframe.count() > 0:
                                         iframe_src = iframe.get_attribute("src") or iframe.get_attribute("data-src")
                                         if iframe_src and "http" in iframe_src:
-                                            # استبعاد الإعلانات
                                             if not any(bad in iframe_src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
-                                                # تنظيف اسم السيرفر
-                                                clean_server_name = s_name.replace("\n", " ").strip()
-                                                watch_servers[clean_server_name] = iframe_src
+                                                clean_sname = s_name.replace("\n", " ").strip()
+                                                watch_servers[clean_sname] = iframe_src
                                                 
                                                 if iframe_src not in streaming_links_list:
                                                     streaming_links_list.append(iframe_src)
@@ -198,7 +186,6 @@ def crawl_series():
                                 except Exception:
                                     continue
 
-                            # احتياطي: في حال لم يضغط على زر
                             if not primary_watch_url:
                                 iframe = ep_page.locator("iframe").first
                                 if iframe.count() > 0:
@@ -206,7 +193,6 @@ def crawl_series():
                                     if primary_watch_url and primary_watch_url not in streaming_links_list:
                                         streaming_links_list.append(primary_watch_url)
 
-                            # بناء البيانات
                             direct_links_payload = {
                                 "primary_watch": primary_watch_url,
                                 "watch_servers": watch_servers,
@@ -223,10 +209,9 @@ def crawl_series():
                             }
                             
                             supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
-                            print(f"   ↳ الحلقة {ep_number}: تم جلب {len(watch_servers)} سيرفر مشاهدة ({', '.join(watch_servers.keys())})", flush=True)
+                            print(f"      ✔️ حلقة {ep_number}: تمت الإضافة بـ ({len(watch_servers)}) سيرفر", flush=True)
 
                         except Exception as ep_err:
-                            print(f"⚠️ خطأ بالحلقة: {ep_err}", flush=True)
                             continue
                     
                     ep_page.close()
