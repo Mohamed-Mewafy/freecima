@@ -32,6 +32,34 @@ def extract_episode_number(title):
         return int(nums[-1])
     return 1
 
+def get_best_poster(page):
+    try:
+        meta_img = page.locator('meta[property="og:image"]')
+        if meta_img.count() > 0:
+            content = meta_img.get_attribute("content")
+            if content and "http" in content:
+                return content
+    except:
+        pass
+
+    selectors = [
+        '.poster img', '.seriesBanner img', '.thumbnail img', 
+        '.single-poster img', '.storyImage img', '.bserv img', 'div img'
+    ]
+    
+    for sel in selectors:
+        try:
+            imgs = page.locator(sel).all()
+            for img in imgs:
+                if not img.is_visible():
+                    continue
+                src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+                if src and "http" in src and not any(x in src.lower() for x in ["icon", "logo", "avatar", "ads"]):
+                    return src
+        except:
+            continue
+    return ""
+
 def crawl_series(page):
     print("\n🚀 === بدء مرحلة سحب المسلسلات ===", flush=True)
     page_num = 1
@@ -68,16 +96,7 @@ def crawl_series(page):
                 if desc_el.count() > 0:
                     description = desc_el.text_content().strip()
 
-                # استخراج البوستر بدقة عالية
-                poster_url = ""
-                meta_img = page.locator('meta[property="og:image"]')
-                if meta_img.count() > 0:
-                    poster_url = meta_img.get_attribute("content") or ""
-                
-                if not poster_url or "http" not in poster_url:
-                    img_el = page.locator('.poster img, .seriesBanner img, .thumbnail img, img').first
-                    if img_el.count() > 0:
-                        poster_url = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
+                poster_url = get_best_poster(page)
 
                 series_payload = {
                     "title": series_title,
@@ -95,7 +114,7 @@ def crawl_series(page):
                     continue
                 series_id = series_id_res.data[0]['id']
                 
-                print(f"🎬 جاري معالجة المسلسل: {series_title} (ID: {series_id})", flush=True)
+                print(f"🎬 جاري معالجة المسلسل: {series_title}", flush=True)
 
                 episode_links = page.eval_on_selector_all('a[href*="watch.php?vid="], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                 unique_episodes = list(set(episode_links))
@@ -109,7 +128,6 @@ def crawl_series(page):
                         ep_raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "حلقة"
                         ep_number = extract_episode_number(ep_raw_title)
                         
-                        # إدخال الحلقة في جدول episodes_cima الصحيح
                         episode_payload = {
                             "series_id": series_id,
                             "season_number": 1,
@@ -120,31 +138,39 @@ def crawl_series(page):
                         
                         supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
                         
-                        # جلب الـ ID الخاص بالحلقة للربط مع السيرفرات
                         ep_id_res = supabase.table("episodes_cima").select("id").eq("series_id", series_id).eq("season_number", 1).eq("episode_number", ep_number).execute()
                         if not ep_id_res.data:
                             continue
                         episode_id = ep_id_res.data[0]['id']
 
-                        server_buttons = page.locator('button, a').all()
-                        is_first_server = True
+                        # جلب جميع أزرار سيرفرات المشاهدة بالطريقة الشاملة تماماً مثل الأفلام
+                        server_elements = page.locator('ul.servers-list li, .servers-list button, .servers-list a, .watch-servers li, .servers-btns button, button, .server-item').all()
                         
-                        for btn in server_buttons:
+                        # لو لم يتم العثور على سيلكتور مخصص، نجرب البحث عن أي أزرار أو عناصر قابلة للنقر داخل صندوق السيرفرات
+                        if len(server_elements) == 0:
+                            server_elements = page.locator('div[class*="server"] button, div[class*="server"] a, ul[class*="server"] li').all()
+
+                        is_first_server = True
+                        servers_count = 0
+
+                        for idx, btn in enumerate(server_elements):
                             try:
                                 if not btn.is_visible():
                                     continue
+                                
                                 btn_text = btn.text_content().strip()
-                                unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK"]
-                                if not btn_text or len(btn_text) > 15 or any(w in btn_text for w in unwanted_texts):
+                                unwanted = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK"]
+                                if not btn_text or len(btn_text) > 25 or any(w in btn_text for w in unwanted):
                                     continue
                                 
-                                btn.click(timeout=1500)
-                                time.sleep(0.5)
+                                btn.click(timeout=2000)
+                                time.sleep(0.8) # الانتظار قليلاً ليتم تحميل الـ iframe الخاص بالسيرفر
                                 
                                 iframe = page.locator("iframe").first
                                 if iframe.count() > 0:
                                     iframe_src = iframe.get_attribute("src")
                                     if iframe_src and "http" in iframe_src:
+                                        # التحقق من عدم تكرار نفس الرابط لنفس الحلقة
                                         source_payload = {
                                             "episode_id": episode_id,
                                             "quality": btn_text,
@@ -154,79 +180,17 @@ def crawl_series(page):
                                         }
                                         supabase.table("episode_sources").upsert(source_payload).execute()
                                         is_first_server = False
+                                        servers_count += 1
                             except:
                                 continue
 
-                        print(f"      ✔️ تم حفظ الحلقة {ep_number} وسيرفراتها بنجاح", flush=True)
+                        print(f"      ✔️ الحلقة {ep_number}: تم سحب عدد {servers_count} سيرفر بنجاح", flush=True)
 
                     except Exception as ep_ex:
                         print(f"      ⚠️ خطأ في معالجة حلقة: {ep_ex}", flush=True)
 
             except Exception as e:
                 print(f"⚠️ خطأ في معالجة المسلسل: {e}", flush=True)
-        
-        page_num += 1
-
-def crawl_arabic_movies(page):
-    print("\n🎬 === بدء مرحلة سحب الأفلام العربي ===", flush=True)
-    page_num = 1
-    while True:
-        print(f"🔄 جاري فحص صفحة الأفلام العربي رقم: {page_num}", flush=True)
-        url = f"{ARABIC_MOVIES_URL}&page={page_num}" if page_num > 1 else ARABIC_MOVIES_URL
-        
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            print(f"⚠️ فشل تحميل صفحة الأفلام {page_num}...", flush=True)
-            page_num += 1
-            continue
-        
-        links = page.eval_on_selector_all('a[href*="watch.php?vid="], a[href*="movie"]', "elements => elements.map(e => e.href)")
-        
-        if not links or len(links) == 0:
-            print(f"🏁 وصلت إلى نهاية صفحات الأفلام العربي (الصفحة {page_num} فارغة).", flush=True)
-            break
-
-        unique_links = list(set(links))
-        print(f"📄 وُجد {len(unique_links)} فيلم في الصفحة {page_num}", flush=True)
-
-        for link in unique_links:
-            try:
-                page.goto(link, wait_until="domcontentloaded", timeout=60000)
-                
-                raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
-                movie_title = clean_title(raw_title)
-                year = extract_year(raw_title)
-                
-                description = "لا يوجد وصف"
-                desc_el = page.locator('.story').first
-                if desc_el.count() > 0:
-                    description = desc_el.text_content().strip()
-
-                poster_url = ""
-                meta_img = page.locator('meta[property="og:image"]')
-                if meta_img.count() > 0:
-                    poster_url = meta_img.get_attribute("content") or ""
-                
-                if not poster_url or "http" not in poster_url:
-                    img_el = page.locator('.poster img, .seriesBanner img, .thumbnail img, img').first
-                    if img_el.count() > 0:
-                        poster_url = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
-
-                movie_payload = {
-                    "title": movie_title,
-                    "poster_url": poster_url,
-                    "year": year,
-                    "description": description,
-                    "watch_url": link,
-                    "category_type": "arabic-movies"
-                }
-                
-                supabase.table("tv_series").upsert(movie_payload, on_conflict="title").execute()
-                print(f"🍿 تم حفظ الفيلم العربي: {movie_title}", flush=True)
-
-            except Exception as e:
-                print(f"⚠️ خطأ في معالجة الفيلم: {e}", flush=True)
         
         page_num += 1
 
@@ -237,8 +201,6 @@ def main():
         page.set_default_timeout(60000)
 
         crawl_series(page)
-        crawl_arabic_movies(page)
-
         browser.close()
     print("\n✅ تم الانتهاء من عملية السحب بالكامل بنجاح!", flush=True)
 
