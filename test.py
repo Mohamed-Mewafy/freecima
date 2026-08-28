@@ -97,7 +97,7 @@ def crawl_series():
                     if not series_title:
                         continue
 
-                    # 1. التحقق مما إذا كان المسلسل موجوداً بالفعل
+                    # 1. التحقق من وجود المسلسل
                     existing = supabase.table("tv_series").select("id").eq("title", series_title).execute()
                     if existing.data and len(existing.data) > 0:
                         series_id = existing.data[0]['id']
@@ -126,7 +126,7 @@ def crawl_series():
                         series_id = res_insert.data[0]['id']
                         print(f"🎬 تم إدخال مسلسل جديد: {series_title}", flush=True)
 
-                    # 2. جلب الحلقات المخزنة مسبقاً للمسلسل لتقييمها
+                    # 2. جلب الحلقات المخزنة وحساب عدد السيرفرات الحالية لكل حلقة
                     db_episodes_res = supabase.table("episodes_cima").select("episode_number, direct_links").eq("series_id", series_id).execute()
                     db_episodes_map = {}
                     if db_episodes_res.data:
@@ -136,33 +136,33 @@ def crawl_series():
                             servers = d_links.get("watch_servers") or {}
                             db_episodes_map[ep_num] = len(servers)
 
-                    # 3. سحب روابط الحلقات من الموقع
+                    # 3. سحب روابط الحلقات وترشيحها لمنع التكرار
                     episode_links = page.eval_on_selector_all(
-                        'a[href*="watch.php"], a[href*="play.php"], a[href*="episode"]', 
+                        'a[href*="watch.php"], a[href*="play.php"]', 
                         "elements => elements.map(e => e.href)"
                     )
-                    unique_episodes = list(set(episode_links))
+                    
+                    # توحيد الروابط إلى صيغة play.php لمنع تكرار نفس الحلقة
+                    normalized_links = list(set([l.replace("watch.php", "play.php") for l in episode_links]))
 
                     ep_page = browser.new_page()
                     ep_page.set_default_timeout(25000)
 
-                    for ep_link in unique_episodes:
+                    processed_episodes = set()
+
+                    for play_url in normalized_links:
                         try:
-                            # تقدير رقم الحلقة من الرابط مؤقتاً للتأكد قبل فتح الصفحة
-                            nums_in_link = re.findall(r'\d+', ep_link)
-                            temp_ep_num = int(nums_in_link[-1]) if nums_in_link else None
-
-                            # إذا كانت الحلقة موجودة بـ 3 سيرفرات أو أكثر يتم تخطيها فوراً لتوفير الوقت
-                            if temp_ep_num and temp_ep_num in db_episodes_map and db_episodes_map[temp_ep_num] >= 3:
-                                continue
-
-                            play_url = ep_link.replace("watch.php", "play.php")
                             ep_page.goto(play_url, wait_until="domcontentloaded", timeout=25000)
                             
                             ep_raw_title = ep_page.locator('h1').first.text_content().strip() if ep_page.locator('h1').count() > 0 else "حلقة"
                             ep_number = extract_episode_number(ep_raw_title)
 
-                            # إعادة الفحص برقم الحلقة الدقيق المأخوذ من عنوان الصفحة
+                            # منع معالجة نفس رقم الحلقة مرتين في الدورة الواحدة
+                            if ep_number in processed_episodes:
+                                continue
+                            processed_episodes.add(ep_number)
+
+                            # إذا كانت الحلقة تحتوي مسبقاً على 3 سيرفرات أو أكثر يتم تخطيها
                             if ep_number in db_episodes_map and db_episodes_map[ep_number] >= 3:
                                 continue
                             
@@ -170,8 +170,9 @@ def crawl_series():
                             streaming_links_list = []
                             primary_watch_url = ""
 
+                            # الانتظار حتى تحميل عناصر قائمة السيرفرات
                             try:
-                                ep_page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=3000)
+                                ep_page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=4000)
                             except Exception:
                                 pass
 
@@ -205,7 +206,9 @@ def crawl_series():
                                 except Exception:
                                     continue
 
+                            # محاولة الاحتياط في حال استمرار التأخير في تحميل الأزرار
                             if not watch_servers:
+                                time.sleep(1.5)
                                 iframe = ep_page.locator("iframe").first
                                 if iframe.count() > 0:
                                     src = iframe.get_attribute("src") or iframe.get_attribute("data-src") or ""
@@ -214,23 +217,25 @@ def crawl_series():
                                         streaming_links_list.append(src)
                                         primary_watch_url = src
 
-                            direct_links_payload = {
-                                "primary_watch": primary_watch_url,
-                                "watch_servers": watch_servers,
-                                "streaming_links": streaming_links_list
-                            }
+                            # تحديث الحلقة فقط إذا تم جلب سيرفرات جديدة
+                            if len(watch_servers) > 0:
+                                direct_links_payload = {
+                                    "primary_watch": primary_watch_url,
+                                    "watch_servers": watch_servers,
+                                    "streaming_links": streaming_links_list
+                                }
 
-                            episode_payload = {
-                                "series_id": series_id,
-                                "season_number": 1,
-                                "episode_number": ep_number,
-                                "title": ep_raw_title,
-                                "watch_url": play_url,
-                                "direct_links": direct_links_payload
-                            }
-                            
-                            supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
-                            print(f"      ✔️ حلقة {ep_number}: تمت إضافة ({len(watch_servers)}) سيرفرات", flush=True)
+                                episode_payload = {
+                                    "series_id": series_id,
+                                    "season_number": 1,
+                                    "episode_number": ep_number,
+                                    "title": ep_raw_title,
+                                    "watch_url": play_url,
+                                    "direct_links": direct_links_payload
+                                }
+                                
+                                supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
+                                print(f"      ✔️ حلقة {ep_number}: تمت إضافة ({len(watch_servers)}) سيرفرات", flush=True)
 
                         except Exception:
                             continue
