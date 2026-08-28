@@ -10,7 +10,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BASE_DOMAIN = "https://cima.land"
-SERIES_CATEGORY_URL = f"{BASE_DOMAIN}/moslslat.php"
+SERIES_CATEGORY_URL = f"{BASE_DOMAIN}/moslslات.php" if False else f"{BASE_DOMAIN}/moslslat.php"
 
 def clean_title(title):
     pattern = r'(مشاهدة|فيلم|مسلسل|كامل|اون لاين|HD|1080p|720p|4K|\d{4}|الحلقة|\d+)'
@@ -32,7 +32,6 @@ def extract_episode_number(title):
     return 1
 
 def get_best_poster(page):
-    # 1. البحث في الـ Meta Tags الأساسية (og:image) وهي الأضمن
     try:
         meta_img = page.locator('meta[property="og:image"]')
         if meta_img.count() > 0:
@@ -42,61 +41,33 @@ def get_best_poster(page):
     except:
         pass
 
-    # 2. البحث الذكي داخل عناصر الصور في صفحة العرض
-    poster_selectors = [
-        '.poster img', '.seriesBanner img', '.thumbnail img', 
-        '.single-poster img', '.storyImage img', '.bserv img', 
-        'div.poster img', 'div.serie-poster img', '.Image img'
-    ]
-    
-    for sel in poster_selectors:
-        try:
-            img_element = page.locator(sel).first
-            if img_element.count() > 0:
-                # فحص كافة الخصائص المحتملة التي قد تحفظ رابط الصورة الحقيقي
-                src = (
-                    img_element.get_attribute("src") or 
-                    img_element.get_attribute("data-src") or 
-                    img_element.get_attribute("data-lazy-src") or
-                    img_element.get_attribute("srcset")
-                )
-                if src and "http" in src and not any(x in src.lower() for x in ["icon", "logo", "avatar", "ads"]):
-                    return src.split()[0] # لو الـ srcset فيه أكتر من رابط، بنخد الأول
-        except:
-            continue
-
-    # 3. الحل الأخير: فحص أول صورة كبيرة صالحة في الصفحة
     try:
-        all_imgs = page.locator('img').all()
-        for img in all_imgs:
-            if not img.is_visible():
-                continue
-            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-            if src and "http" in src and not any(x in src.lower() for x in ["icon", "logo", "avatar", "ads", "emoticon"]):
+        img_element = page.locator('.poster img, .seriesBanner img, .thumbnail img, img').first
+        if img_element.count() > 0:
+            src = img_element.get_attribute("src") or img_element.get_attribute("data-src") or ""
+            if src and "http" in src:
                 return src
     except:
         pass
-
     return ""
 
 def crawl_series(page):
-    print("\n🚀 === بدء السحب مع الحل النهائي لمشكلة البوسترات والسيرفرات ===", flush=True)
+    print("\n🚀 === بدء السحب (نسخة محسنة وسريعة) ===", flush=True)
     page_num = 1
     while True:
         print(f"🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
         url = f"{SERIES_CATEGORY_URL}?page={page_num}" if page_num > 1 else SERIES_CATEGORY_URL
         
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            print(f"⚠️ فشل تحميل صفحة المسلسلات {page_num}...", flush=True)
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        except:
             page_num += 1
             continue
         
         links = page.eval_on_selector_all('a[href*="view-serie.php"]', "elements => elements.map(e => e.href)")
         
         if not links or len(links) == 0:
-            print(f"🏁 وصلت إلى نهاية صفحات المسلسلات (الصفحة {page_num} فارغة).", flush=True)
+            print(f"🏁 نهاية صفحة المسلسلات عند الصفحة {page_num}", flush=True)
             break
 
         unique_links = list(set(links))
@@ -104,7 +75,7 @@ def crawl_series(page):
 
         for link in unique_links:
             try:
-                page.goto(link, wait_until="domcontentloaded", timeout=60000)
+                page.goto(link, wait_until="domcontentloaded", timeout=45000)
                 
                 raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                 series_title = clean_title(raw_title)
@@ -115,7 +86,6 @@ def crawl_series(page):
                 if desc_el.count() > 0:
                     description = desc_el.text_content().strip()
 
-                # استدعاء دالة جلب البوستر المطورة
                 poster_url = get_best_poster(page)
 
                 series_payload = {
@@ -134,7 +104,7 @@ def crawl_series(page):
                     continue
                 series_id = series_id_res.data[0]['id']
                 
-                print(f"🎬 معالجة المسلسل: {series_title} | البوستر: {poster_url[:40] if poster_url else '❌ غير متاح'}", flush=True)
+                print(f"🎬 معالجة المسلسل: {series_title}", flush=True)
 
                 episode_links = page.eval_on_selector_all('a[href*="watch.php?vid="], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                 unique_episodes = list(set(episode_links))
@@ -142,12 +112,11 @@ def crawl_series(page):
                 for ep_link in unique_episodes:
                     try:
                         play_url = ep_link.replace("watch.php", "play.php")
-                        page.goto(play_url, wait_until="domcontentloaded", timeout=60000)
+                        page.goto(play_url, wait_until="domcontentloaded", timeout=30000)
                         
                         ep_raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "حلقة"
                         ep_number = extract_episode_number(ep_raw_title)
                         
-                        # سحب جميع سيرفرات المشاهدة
                         watch_servers = {}
                         primary_watch_url = ""
                         
@@ -168,8 +137,8 @@ def crawl_series(page):
 
                             for btn, s_name in servers_info:
                                 try:
-                                    btn.click(timeout=2000)
-                                    time.sleep(0.7)
+                                    btn.click(timeout=1000)
+                                    time.sleep(0.4) # تقليل وقت الانتظار لتسريع العملية وعدم حدوث تعليق
                                     
                                     iframe = page.locator("iframe").first
                                     if iframe.count() > 0:
@@ -206,10 +175,10 @@ def crawl_series(page):
                     except:
                         continue
 
-                print(f"      ✔️ تم حفظ الحلقات وسيرفراتها بنجاح.", flush=True)
+                print(f"      ✔️ تمت حلقة المسلسل بنجاح.", flush=True)
 
             except Exception as e:
-                print(f"⚠️ خطأ في معالجة المسلسل: {e}", flush=True)
+                print(f"⚠️ خطأ: {e}", flush=True)
         
         page_num += 1
 
@@ -217,7 +186,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.set_default_timeout(60000)
+        page.set_default_timeout(45000)
 
         crawl_series(page)
         browser.close()
