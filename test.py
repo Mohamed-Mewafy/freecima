@@ -71,7 +71,7 @@ def crawl_series():
         page.set_default_timeout(30000)
 
         page_num = 1
-        print("\n🚀 === بدء سحب كافة سيرفرات المشاهدة المتاحة ===", flush=True)
+        print("\n🚀 === بدء السحب واقتناص السيرفرات عبر الضغط الفعلي وحصاد الـ AJAX ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
@@ -132,12 +132,12 @@ def crawl_series():
                     unique_episodes = list(set(episode_links))
 
                     ep_page = browser.new_page()
-                    ep_page.set_default_timeout(25000)
+                    ep_page.set_default_timeout(30000)
 
                     for ep_link in unique_episodes:
                         try:
-                            # زيارة رابط مشاهدة الحلقة الأساسي لاستخراج جميع الأزرار
-                            ep_page.goto(ep_link, wait_until="domcontentloaded", timeout=25000)
+                            play_url = ep_link.replace("watch.php", "play.php")
+                            ep_page.goto(play_url, wait_until="domcontentloaded", timeout=30000)
                             
                             ep_raw_title = ep_page.locator('h1').first.text_content().strip() if ep_page.locator('h1').count() > 0 else "حلقة"
                             ep_number = extract_episode_number(ep_raw_title)
@@ -146,60 +146,49 @@ def crawl_series():
                             streaming_links_list = []
                             primary_watch_url = ""
 
-                            # 1. التفتيش عن عناصر قائمة السيرفرات في الصفحة (سواء كانت أزرار أو عناصر li)
-                            server_elements = ep_page.locator('.WatchServersList li, .servers-list li, .WatchServers li, [data-url], [data-embed]').all()
-                            
-                            if not server_elements:
-                                server_elements = ep_page.locator('ul.servers-list button, ul.servers-list a, div.server-btn').all()
+                            # تحديد أزرار السيرفرات بناءً على وسوم li أو أزرار القائمة داخل حاوية السيرفرات
+                            server_elements = ep_page.locator('.WatchServersList li, .servers-list li, ul.servers-list button, ul.servers-list a, div.server-btn, [data-url], [data-embed]').all()
 
-                            for el in server_elements:
+                            if not server_elements:
+                                # محدد شامل كخطة احتياطية للأزرار المشابهة
+                                server_elements = ep_page.locator('ul li:has(i), ul li:has(span)').all()
+
+                            for btn in server_elements:
                                 try:
-                                    s_name = el.text_content().strip()
+                                    s_name = btn.text_content().strip()
                                     clean_sname = re.sub(r'\s+', ' ', s_name).strip()
                                     
                                     unwanted_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "مشاهدة الآن", "تحميل", "Download"]
                                     if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_texts):
                                         continue
 
-                                    # فحص ما إذا كان الرابط موجود كـ Attribute بدون الحاجة للضغط
-                                    direct_embed = el.get_attribute('data-url') or el.get_attribute('data-embed') or el.get_attribute('data-link')
-                                    
-                                    if direct_embed and 'http' in direct_embed:
-                                        watch_servers[clean_sname] = direct_embed
-                                        if direct_embed not in streaming_links_list:
-                                            streaming_links_list.append(direct_embed)
-                                        if not primary_watch_url:
-                                            primary_watch_url = direct_embed
-                                    else:
-                                        # الضغط على العنصر لتغيير الـ iframe وجلب السيرفر
-                                        el.click(force=True, timeout=1200)
-                                        time.sleep(0.6)
-                                        
-                                        iframe = ep_page.locator("iframe").first
-                                        if iframe.count() > 0:
-                                            iframe_src = iframe.get_attribute("src") or iframe.get_attribute("data-src")
-                                            if iframe_src and "http" in iframe_src:
-                                                if not any(bad in iframe_src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
-                                                    watch_servers[clean_sname] = iframe_src
-                                                    if iframe_src not in streaming_links_list:
-                                                        streaming_links_list.append(iframe_src)
-                                                    if not primary_watch_url:
-                                                        primary_watch_url = iframe_src
+                                    # تفعيل حدث النقر عبر JavaScript مباشرة لضمان تنفيذ السكربت الداخلي للموقع
+                                    btn.dispatch_event('click')
+                                    time.sleep(0.8)  # مهلة كافية لتحميل الـ AJAX وتحديث الـ Iframe
+
+                                    # جلب رابط السيرفر من الـ Iframe بعد تحديثه
+                                    iframe = ep_page.locator("iframe").first
+                                    if iframe.count() > 0:
+                                        iframe_src = iframe.get_attribute("src") or iframe.get_attribute("data-src")
+                                        if iframe_src and "http" in iframe_src:
+                                            if not any(bad in iframe_src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
+                                                watch_servers[clean_sname] = iframe_src
+                                                if iframe_src not in streaming_links_list:
+                                                    streaming_links_list.append(iframe_src)
+                                                if not primary_watch_url:
+                                                    primary_watch_url = iframe_src
                                 except Exception:
                                     continue
 
-                            # 2. خطة احتياطية: إذا لم يجد أزراراً، يسحب كل الـ iframes الموجودة
+                            # إذا لم يلتقط أي سيرفر بالضغط، أخذ الـ Iframe الحالي بالصفحة
                             if not watch_servers:
-                                iframes = ep_page.locator("iframe").all()
-                                for idx, iframe in enumerate(iframes):
+                                iframe = ep_page.locator("iframe").first
+                                if iframe.count() > 0:
                                     src = iframe.get_attribute("src") or iframe.get_attribute("data-src") or ""
-                                    if src and "http" in src and not any(bad in src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
-                                        server_label = f"سيرفر {idx + 1}"
-                                        watch_servers[server_label] = src
-                                        if src not in streaming_links_list:
-                                            streaming_links_list.append(src)
-                                        if not primary_watch_url:
-                                            primary_watch_url = src
+                                    if src and "http" in src:
+                                        watch_servers["الرئيسي"] = src
+                                        streaming_links_list.append(src)
+                                        primary_watch_url = src
 
                             direct_links_payload = {
                                 "primary_watch": primary_watch_url,
@@ -212,7 +201,7 @@ def crawl_series():
                                 "season_number": 1,
                                 "episode_number": ep_number,
                                 "title": ep_raw_title,
-                                "watch_url": ep_link,
+                                "watch_url": play_url,
                                 "direct_links": direct_links_payload
                             }
                             
