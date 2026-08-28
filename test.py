@@ -204,7 +204,7 @@ def crawl_arabic_movies(page):
                 }
                 
                 supabase.table("tv_series").upsert(movie_payload, on_conflict="title").execute()
-                print(ف"🍿 تم حفظ الفيلم العربي: {movie_title}", flush=True)
+                print(f"🍿 تم حفظ الفيلم العربي: {movie_title}", flush=True)
 
             except Exception as e:
                 print(f"⚠️ خطأ في معالجة الفيلم: {e}", flush=True)
