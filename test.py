@@ -23,6 +23,15 @@ def extract_year(title):
     match = re.search(r'\b(20\d{2}|19\d{2})\b', title)
     return int(match.group(1)) if match else None
 
+def extract_episode_number(title):
+    match = re.search(r'(?:الحلقة|ep|حلقة)\s*(\d+)', title, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    nums = re.findall(r'\d+', title)
+    if nums:
+        return int(nums[-1])
+    return 1
+
 def crawl_series(page):
     print("\n🚀 === بدء مرحلة سحب المسلسلات ===", flush=True)
     page_num = 1
@@ -59,10 +68,16 @@ def crawl_series(page):
                 if desc_el.count() > 0:
                     description = desc_el.text_content().strip()
 
+                # استخراج البوستر بدقة عالية
                 poster_url = ""
                 meta_img = page.locator('meta[property="og:image"]')
                 if meta_img.count() > 0:
                     poster_url = meta_img.get_attribute("content") or ""
+                
+                if not poster_url or "http" not in poster_url:
+                    img_el = page.locator('.poster img, .seriesBanner img, .thumbnail img, img').first
+                    if img_el.count() > 0:
+                        poster_url = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
 
                 series_payload = {
                     "title": series_title,
@@ -91,6 +106,26 @@ def crawl_series(page):
                         play_url = ep_link.replace("watch.php", "play.php")
                         page.goto(play_url, wait_until="domcontentloaded", timeout=60000)
                         
+                        ep_raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "حلقة"
+                        ep_number = extract_episode_number(ep_raw_title)
+                        
+                        # إدخال الحلقة في جدول episodes_cima الصحيح
+                        episode_payload = {
+                            "series_id": series_id,
+                            "season_number": 1,
+                            "episode_number": ep_number,
+                            "title": ep_raw_title,
+                            "watch_url": play_url
+                        }
+                        
+                        supabase.table("episodes_cima").upsert(episode_payload, on_conflict="series_id, season_number, episode_number").execute()
+                        
+                        # جلب الـ ID الخاص بالحلقة للربط مع السيرفرات
+                        ep_id_res = supabase.table("episodes_cima").select("id").eq("series_id", series_id).eq("season_number", 1).eq("episode_number", ep_number).execute()
+                        if not ep_id_res.data:
+                            continue
+                        episode_id = ep_id_res.data[0]['id']
+
                         server_buttons = page.locator('button, a').all()
                         is_first_server = True
                         
@@ -110,9 +145,8 @@ def crawl_series(page):
                                 if iframe.count() > 0:
                                     iframe_src = iframe.get_attribute("src")
                                     if iframe_src and "http" in iframe_src:
-                                        # ربط السيرفرات مباشرة بـ series_id في جدول episode_sources
                                         source_payload = {
-                                            "episode_id": series_id,
+                                            "episode_id": episode_id,
                                             "quality": btn_text,
                                             "source_url": iframe_src,
                                             "is_primary": is_first_server,
@@ -123,7 +157,7 @@ def crawl_series(page):
                             except:
                                 continue
 
-                        print(f"      ✔️ تم حفظ سيرفرات الحلقة بنجاح", flush=True)
+                        print(f"      ✔️ تم حفظ الحلقة {ep_number} وسيرفراتها بنجاح", flush=True)
 
                     except Exception as ep_ex:
                         print(f"      ⚠️ خطأ في معالجة حلقة: {ep_ex}", flush=True)
@@ -173,6 +207,11 @@ def crawl_arabic_movies(page):
                 meta_img = page.locator('meta[property="og:image"]')
                 if meta_img.count() > 0:
                     poster_url = meta_img.get_attribute("content") or ""
+                
+                if not poster_url or "http" not in poster_url:
+                    img_el = page.locator('.poster img, .seriesBanner img, .thumbnail img, img').first
+                    if img_el.count() > 0:
+                        poster_url = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
 
                 movie_payload = {
                     "title": movie_title,
@@ -197,10 +236,7 @@ def main():
         page = browser.new_page()
         page.set_default_timeout(60000)
 
-        # الخطوة 1: سحب المسلسلات وسيرفراتها أولاً
         crawl_series(page)
-
-        # الخطوة 2: سحب الأفلام العربي بعد الانتهاء
         crawl_arabic_movies(page)
 
         browser.close()
