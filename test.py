@@ -10,12 +10,15 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BASE_DOMAIN = "https://cima.land"
-SERIES_CATEGORY_URL = f"{BASE_DOMAIN}/moslslات.php" if False else f"{BASE_DOMAIN}/moslslat.php"
+SERIES_CATEGORY_URL = f"{BASE_DOMAIN}/moslslat.php"
 
 def clean_title(title):
-    pattern = r'(مشاهدة|فيلم|مسلسل|كامل|اون لاين|HD|1080p|720p|4K|\d{4}|الحلقة|\d+)'
+    # إزالة الكلمات الزائدة والزوائد مثل مترجم، مدبلج، جودات، حلقات، أقواس، سنوات
+    pattern = r'(مشاهدة|فيلم|مسلسل|كامل|اون لاين|HD|1080p|720p|4K|مترجم|مدبلج|حصريا|الموسم|\d+|الحلقة)'
     clean = re.sub(pattern, '', title, flags=re.IGNORECASE)
-    clean = re.sub(r'[:\-]', '', clean)
+    # تنظيف الأقواس والشرطات والمسافات الزائدة
+    clean = re.sub(r'[\(\)\[\]\{\}\:\-\|\،]', ' ', clean)
+    clean = re.sub(r'\b(20\d{2}|19\d{2})\b', '', clean)
     return " ".join(clean.split())
 
 def extract_year(title):
@@ -52,7 +55,7 @@ def get_best_poster(page):
     return ""
 
 def crawl_series(page):
-    print("\n🚀 === بدء السحب (نسخة محسنة وسريعة) ===", flush=True)
+    print("\n🚀 === بدء السحب الذكي (تخطي الموجود + تنظيف العناوين + تصفية الروابط) ===", flush=True)
     page_num = 1
     while True:
         print(f"🔄 جاري فحص صفحة المسلسلات رقم: {page_num}", flush=True)
@@ -67,11 +70,10 @@ def crawl_series(page):
         links = page.eval_on_selector_all('a[href*="view-serie.php"]', "elements => elements.map(e => e.href)")
         
         if not links or len(links) == 0:
-            print(f"🏁 نهاية صفحة المسلسلات عند الصفحة {page_num}", flush=True)
+            print(f"🏁 نهاية صفحات المسلسلات عند الصفحة {page_num}", flush=True)
             break
 
         unique_links = list(set(links))
-        print(f"📄 وُجد {len(unique_links)} مسلسل في الصفحة {page_num}", flush=True)
 
         for link in unique_links:
             try:
@@ -79,6 +81,16 @@ def crawl_series(page):
                 
                 raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                 series_title = clean_title(raw_title)
+                
+                if not series_title:
+                    continue
+
+                # 4. التحقق مما إذا كان المسلسل موجوداً مسبقاً في قاعدة البيانات لتخطيه
+                existing_series = supabase.table("tv_series").select("id").eq("title", series_title).execute()
+                if existing_series.data and len(existing_series.data) > 0:
+                    print(f"⏩ المسلسل موجود مسبقاً، تم التخطي: {series_title}", flush=True)
+                    continue
+
                 year = extract_year(raw_title)
                 
                 description = "لا يوجد وصف"
@@ -97,14 +109,14 @@ def crawl_series(page):
                     "category_type": "احدث المسلسلات"
                 }
                 
-                supabase.table("tv_series").upsert(series_payload, on_conflict="title").execute()
+                res_insert = supabase.table("tv_series").upsert(series_payload, on_conflict="title").execute()
                 
                 series_id_res = supabase.table("tv_series").select("id").eq("title", series_title).execute()
                 if not series_id_res.data:
                     continue
                 series_id = series_id_res.data[0]['id']
                 
-                print(f"🎬 معالجة المسلسل: {series_title}", flush=True)
+                print(f"🎬 مسلسل جديد تمت اضافته: {series_title}", flush=True)
 
                 episode_links = page.eval_on_selector_all('a[href*="watch.php?vid="], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                 unique_episodes = list(set(episode_links))
@@ -118,6 +130,7 @@ def crawl_series(page):
                         ep_number = extract_episode_number(ep_raw_title)
                         
                         watch_servers = {}
+                        streaming_links_list = []
                         primary_watch_url = ""
                         
                         try:
@@ -138,28 +151,32 @@ def crawl_series(page):
                             for btn, s_name in servers_info:
                                 try:
                                     btn.click(timeout=1000)
-                                    time.sleep(0.4) # تقليل وقت الانتظار لتسريع العملية وعدم حدوث تعليق
+                                    time.sleep(0.4)
                                     
                                     iframe = page.locator("iframe").first
                                     if iframe.count() > 0:
                                         iframe_src = iframe.get_attribute("src")
                                         if iframe_src and "http" in iframe_src:
-                                            watch_servers[s_name] = iframe_src
-                                            if not primary_watch_url:
-                                                primary_watch_url = iframe_src
+                                            # تصفية الروابط الوهمية وإعلانات الـ vast والـ js لمنع حفظها
+                                            if not any(bad in iframe_src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com/player"]):
+                                                watch_servers[s_name] = iframe_src
+                                                if iframe_src not in streaming_links_list:
+                                                    streaming_links_list.append(iframe_src)
+                                                if not primary_watch_url:
+                                                    primary_watch_url = iframe_src
                                 except:
                                     continue
                         except:
                             pass
 
-                        if not primary_watch_url:
-                            iframe = page.locator("iframe").first
-                            if iframe.count() > 0:
-                                primary_watch_url = iframe.get_attribute("src") or ""
+                        if not primary_watch_url and streaming_links_list:
+                            primary_watch_url = streaming_links_list[0]
 
+                        # هيكل الـ JSON المطابق تماماً لطلبات التطبيق
                         direct_links_payload = {
                             "primary_watch": primary_watch_url,
-                            "watch_servers": watch_servers
+                            "watch_servers": watch_servers,
+                            "streaming_links": streaming_links_list
                         }
 
                         episode_payload = {
@@ -175,7 +192,7 @@ def crawl_series(page):
                     except:
                         continue
 
-                print(f"      ✔️ تمت حلقة المسلسل بنجاح.", flush=True)
+                print(f"      ✔️ تمت إضافة الحلقات والسيرفرات الحقيقية بنجاح.", flush=True)
 
             except Exception as e:
                 print(f"⚠️ خطأ: {e}", flush=True)
