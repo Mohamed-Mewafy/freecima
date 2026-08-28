@@ -35,9 +35,7 @@ def extract_episode_number(title):
     return int(nums[0]) if nums else 1
 
 def get_best_poster(page):
-    """استخراج رابط البوستر بدقة من وسوم الصورة أو خلفيات الـ CSS"""
     try:
-        # 1. البحث في عناصر الصور الخاصة بالبوستر أو الغلاف
         poster_selectors = [
             '.poster img', '.seriesBanner img', '.thumbnail img',
             '.post-image img', '.img-fluid', 'article img'
@@ -50,7 +48,6 @@ def get_best_poster(page):
                     if val and 'http' in val and not any(bad in val for bad in ['logo', 'avatar', 'icon']):
                         return val.split()[0]
 
-        # 2. البحث في خلفيات الـ CSS (Background Image)
         bg_element = page.locator('[style*="background-image"]').first
         if bg_element.count() > 0:
             style = bg_element.get_attribute('style') or ''
@@ -60,7 +57,6 @@ def get_best_poster(page):
                 if 'http' in clean_url:
                     return clean_url
 
-        # 3. الاعتماد على og:image كخيار أخير مع التصفية
         meta_img = page.locator('meta[property="og:image"]').get_attribute("content")
         if meta_img and 'http' in meta_img and not any(bad in meta_img for bad in ['logo', 'icon', 'default']):
             return meta_img
@@ -69,55 +65,59 @@ def get_best_poster(page):
     return ""
 
 def extract_all_servers(page):
-    """الضغط على كافة السيرفرات المتاحة واستخراج الروابط المباشرة"""
     watch_servers = {}
     streaming_links_list = []
-    
-    # تحديد محددات أزرار/عناصر السيرفرات الشائعة في الموقع
-    server_elements = page.locator('.servers-list li, .watch-servers li, ul.servers-list button, .server-btn, ul#serversNav li').all()
-    
-    if not server_elements:
-        server_elements = page.locator('button, a[data-url], li[data-link]').all()
 
-    for idx, el in enumerate(server_elements):
-        try:
-            if not el.is_visible():
-                continue
+    try:
+        page.evaluate("window.scrollBy(0, 300)")
+        time.sleep(0.5)
 
-            btn_text = el.text_content().strip()
-            # استبعاد الأزرار الجانبية أو أزرار القوائم
-            unwanted = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "تحميل", "Download"]
-            if not btn_text or len(btn_text) > 25 or any(w in btn_text for w in unwanted):
-                continue
+        server_buttons = page.locator('ul.servers-list li, .watch-servers li, .embed-player-tabs button, .watch-servers button, button[data-url], li[data-link]').all()
 
-            # في حال لم يكن للسيرفر اسم واضح، يتم تسميته رقمياً
-            server_name = btn_text if len(btn_text) > 1 else f"سيرفر {idx + 1}"
+        if not server_buttons:
+            server_buttons = page.locator('li, button, a').all()
 
-            # النقر على السيرفر لتوليد الـ Iframe
-            el.click(timeout=2000)
-            time.sleep(0.8) # انتظار بسيط لاستجابة الـ AJAX
-
-            # البحث عن الـ Iframe الناتج
-            iframes = page.locator("iframe").all()
-            for iframe in iframes:
-                try:
-                    src = iframe.get_attribute("src") or iframe.get_attribute("data-src")
-                    if src and "http" in src:
-                        # فلترة الإعلانات والملفات البرمجية الوهمية
-                        if not any(bad in src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com", "googleads", "doubleclick"]):
-                            if server_name not in watch_servers:
-                                watch_servers[server_name] = src
-                            if src not in streaming_links_list:
-                                streaming_links_list.append(src)
-                except Exception:
+        for btn in server_buttons:
+            try:
+                if not btn.is_visible():
                     continue
-        except Exception:
-            continue
+
+                btn_text = btn.text_content().strip()
+                unwanted = ["مشاهدة الآن", "تحميل الآن", "تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "تحميل", "Download"]
+                if not btn_text or len(btn_text) > 20 or any(w in btn_text for w in unwanted):
+                    continue
+
+                server_name = re.sub(r'\s+', ' ', btn_text).strip()
+
+                direct_data_url = btn.get_attribute("data-link") or btn.get_attribute("data-url") or btn.get_attribute("data-src")
+                if direct_data_url and "http" in direct_data_url:
+                    if not any(bad in direct_data_url.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
+                        watch_servers[server_name] = direct_data_url
+                        if direct_data_url not in streaming_links_list:
+                            streaming_links_list.append(direct_data_url)
+                        continue
+
+                btn.click(force=True, timeout=2000)
+                time.sleep(0.7)
+
+                iframe_el = page.locator("iframe#player_iframe, .embed-player iframe, iframe[src*='http']").first
+                if iframe_el.count() > 0:
+                    iframe_src = iframe_el.get_attribute("src") or iframe_el.get_attribute("data-src")
+                    if iframe_src and "http" in iframe_src:
+                        if not any(bad in iframe_src.lower() for bad in ["vast.js", "provider.hlsjs.js", "audinifer.com"]):
+                            watch_servers[server_name] = iframe_src
+                            if iframe_src not in streaming_links_list:
+                                streaming_links_list.append(iframe_src)
+            except Exception:
+                continue
+
+    except Exception as e:
+        print(f"⚠️ تنبيه أثناء استخراج السيرفرات: {e}", flush=True)
 
     return watch_servers, streaming_links_list
 
 def crawl_series(context):
-    print("\n🚀 === بدء السحب الذكي (إصلاح البوستر واستخراج كافة السيرفرات) ===", flush=True)
+    print("\n🚀 === بدء السحب الذكي (سحب كافة سيرفرات المشاهدة المتاحة) ===", flush=True)
     page_num = 1
     main_page = context.new_page()
     main_page.set_default_timeout(45000)
@@ -211,7 +211,7 @@ def crawl_series(context):
                         continue
                 
                 ep_page.close()
-                print(f"      ✔️ تمت إضافة الحلقات وبداخلها ({len(watch_servers)}) سيرفر مشاهدة.", flush=True)
+                print(f"      ✔️ تم جلب ({len(watch_servers)}) سيرفر مشاهدة للحلقة.", flush=True)
 
             except Exception as e:
                 print(f"⚠️ خطأ أثناء معالجة المسلسل: {e}", flush=True)
