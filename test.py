@@ -11,7 +11,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BASE_DOMAIN = "https://cima.land"
 SERIES_CATEGORY_URL = f"{BASE_DOMAIN}/moslslat.php"
-ARABIC_MOVIES_URL = f"{BASE_DOMAIN}/category.php?cat=34"  # رابط الأفلام العربي
+ARABIC_MOVIES_URL = f"{BASE_DOMAIN}/category.php?cat=34"
 
 def clean_title(title):
     pattern = r'(مشاهدة|فيلم|مسلسل|كامل|اون لاين|HD|1080p|720p|4K|\d{4}|الحلقة|\d+)'
@@ -22,10 +22,6 @@ def clean_title(title):
 def extract_year(title):
     match = re.search(r'\b(20\d{2}|19\d{2})\b', title)
     return int(match.group(1)) if match else None
-
-def extract_episode_number(title):
-    match = re.search(r'(?:الحلقة|ep)\s*(\d+)', title, re.IGNORECASE)
-    return int(match.group(1)) if match else 1
 
 def crawl_series(page):
     print("\n🚀 === بدء مرحلة سحب المسلسلات ===", flush=True)
@@ -95,23 +91,6 @@ def crawl_series(page):
                         play_url = ep_link.replace("watch.php", "play.php")
                         page.goto(play_url, wait_until="domcontentloaded", timeout=60000)
                         
-                        ep_raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "حلقة"
-                        ep_number = extract_episode_number(ep_raw_title)
-                        
-                        episode_payload = {
-                            "series_id": series_id,
-                            "episode_number": ep_number,
-                            "title": ep_raw_title,
-                            "watch_url": play_url
-                        }
-                        
-                        supabase.table("episodes").upsert(episode_payload, on_conflict="series_id, episode_number").execute()
-                        
-                        ep_id_res = supabase.table("episodes").select("id").eq("series_id", series_id).eq("episode_number", ep_number).execute()
-                        if not ep_id_res.data:
-                            continue
-                        episode_id = ep_id_res.data[0]['id']
-
                         server_buttons = page.locator('button, a').all()
                         is_first_server = True
                         
@@ -131,8 +110,9 @@ def crawl_series(page):
                                 if iframe.count() > 0:
                                     iframe_src = iframe.get_attribute("src")
                                     if iframe_src and "http" in iframe_src:
+                                        # ربط السيرفرات مباشرة بـ series_id في جدول episode_sources
                                         source_payload = {
-                                            "episode_id": episode_id,
+                                            "episode_id": series_id,
                                             "quality": btn_text,
                                             "source_url": iframe_src,
                                             "is_primary": is_first_server,
@@ -143,7 +123,7 @@ def crawl_series(page):
                             except:
                                 continue
 
-                        print(f"      ✔️ تم حفظ الحلقة {ep_number} وسيرفراتها بنجاح", flush=True)
+                        print(f"      ✔️ تم حفظ سيرفرات الحلقة بنجاح", flush=True)
 
                     except Exception as ep_ex:
                         print(f"      ⚠️ خطأ في معالجة حلقة: {ep_ex}", flush=True)
@@ -217,10 +197,10 @@ def main():
         page = browser.new_page()
         page.set_default_timeout(60000)
 
-        # الخطوة 1: سحب جميع المسلسلات أولاً
+        # الخطوة 1: سحب المسلسلات وسيرفراتها أولاً
         crawl_series(page)
 
-        # الخطوة 2: بعد الانتهاء من المسلسلات، سحب الأفلام العربي
+        # الخطوة 2: سحب الأفلام العربي بعد الانتهاء
         crawl_arabic_movies(page)
 
         browser.close()
