@@ -58,7 +58,6 @@ def get_best_poster(page):
 
 def crawl_movies():
     with sync_playwright() as p:
-        # إعداد المتصفح مع User-Agent لتجنب الحظر على سيرفرات GitHub Actions
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -75,7 +74,7 @@ def crawl_movies():
         page.set_default_timeout(25000)
 
         page_num = 1
-        print("\n🚀 === بدء سحب الأفلام والتحقق من Supabase ===", flush=True)
+        print("\n🚀 === بدء سحب الأفلام وتجميع كافة السيرفرات إلى Supabase ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة الأفلام رقم: {page_num}", flush=True)
@@ -87,7 +86,6 @@ def crawl_movies():
                 page_num += 1
                 continue
             
-            # البحث عن روابط الأفلام (يمكنك تعديل المحدد بناءً على تصميم الموقع الجديد إن لم يجد روابط)
             links = page.eval_on_selector_all('a[href*="view.php"], a[href*="movie"]', "elements => elements.map(e => e.href)")
             if not links:
                 print(f"🏁 وصلت إلى نهاية الصفحات عند الصفحة {page_num}", flush=True)
@@ -102,8 +100,8 @@ def crawl_movies():
                     if not movie_title:
                         continue
 
-                    # 1. التحقق من وجود الفيلم مسبقاً في قاعدة البيانات
-                    existing = supabase.table("movies").select("id").eq("title", movie_title).execute()
+                    # 1. التحقق من وجود الفيلم مسبقاً في جدول movies_cima
+                    existing = supabase.table("movies_cima").select("id").eq("title", movie_title).execute()
                     if existing.data and len(existing.data) > 0:
                         print(f"🔍 الفيلم موجود مسبقاً: {movie_title}", flush=True)
                         continue
@@ -116,20 +114,22 @@ def crawl_movies():
 
                     poster_url = get_best_poster(page)
 
-                    # 2. استخراج سيرفرات المشاهدة الخاصة بالفيلم
+                    # 2. الانتظار حتى تحميل قائمة السيرفرات تماماً مثل السكربت القديم
+                    try:
+                        page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=4000)
+                    except Exception:
+                        pass
+
                     watch_servers = {}
                     streaming_links_list = []
                     primary_watch_url = ""
 
-                    try:
-                        page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=3000)
-                    except Exception:
-                        pass
-
+                    # جلب جميع عناصر الأزرار الخاصة بالسيرفرات
                     server_elements = page.locator('.WatchServersList li, .servers-list li, ul.servers-list button, ul.servers-list a, .WatchServers li').all()
                     if not server_elements:
                         server_elements = page.locator('div[class*="server"] button, div[class*="server"] a, li[data-url]').all()
 
+                    # الضغط على كل زر سيرفر على حدة واستخراج الـ iframe الخاص به
                     for btn in server_elements:
                         try:
                             s_name = btn.text_content().strip()
@@ -139,8 +139,9 @@ def crawl_movies():
                             if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_texts):
                                 continue
 
+                            # محاكاة الضغط (Click) تماماً مثل السكربت القديم
                             btn.dispatch_event('click')
-                            time.sleep(0.5)
+                            time.sleep(0.6)
 
                             iframe = page.locator("iframe").first
                             if iframe.count() > 0:
@@ -155,8 +156,9 @@ def crawl_movies():
                         except Exception:
                             continue
 
-                    # فحص احتياطي للـ iframe إذا لم يتم العثور على أزرار تفاعلية
+                    # فحص احتياطي في حال عدم وجود أزرار تفاعلية ظاهرة
                     if not watch_servers:
+                        time.sleep(1.5)
                         iframe = page.locator("iframe").first
                         if iframe.count() > 0:
                             src = iframe.get_attribute("src") or iframe.get_attribute("data-src") or ""
@@ -181,9 +183,10 @@ def crawl_movies():
                         "category_type": "احدث الافلام"
                     }
                     
-                    res_insert = supabase.table("movies").upsert(movie_payload, on_conflict="title").execute()
+                    # 3. الحفظ في جدول movies_cima داخل Supabase
+                    res_insert = supabase.table("movies_cima").upsert(movie_payload, on_conflict="title").execute()
                     if res_insert.data:
-                        print(f"🎬 تمت إضافة الفيلم بنجاح: {movie_title} (سيرفرات: {len(watch_servers)})", flush=True)
+                        print(f"🎬 تمت إضافة الفيلم بنجاح: {movie_title} (تم جلب {len(watch_servers)} سيرفرات مشاهدة)", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
