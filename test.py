@@ -33,19 +33,35 @@ def extract_year(title):
     return int(match.group(1)) if match else None
 
 def fetch_tmdb_poster(title):
+    """البحث الذكي في TMDB بفصل الكلمات الإنجليزية والعربية لتفادي فشل البحث بالعناوين المختلطة"""
     try:
-        query = urllib.parse.quote(title)
-        urls = [
-            f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}&language=ar",
-            f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}"
-        ]
-        for url in urls:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                results = data.get("results", [])
-                if results and results[0].get("poster_path"):
-                    return f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
+        en_part = " ".join(re.findall(r'[a-zA-Z0-9\s]+', title)).strip()
+        ar_part = " ".join(re.findall(r'[\u0600-\u06FF0-9\s]+', title)).strip()
+
+        # تجربة البحث بالإنجليزية أولاً (أكثر دقة في TMDB)، ثم بالعربية، ثم بالعنوان كاملاً
+        candidates = []
+        if len(en_part) >= 2:
+            candidates.append(en_part)
+        if len(ar_part) >= 2:
+            candidates.append(ar_part)
+        candidates.append(title)
+
+        for q in candidates:
+            encoded_query = urllib.parse.quote(q)
+            urls = [
+                f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={encoded_query}&language=ar",
+                f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={encoded_query}"
+            ]
+            for target_url in urls:
+                try:
+                    req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=4) as res:
+                        data = json.loads(res.read().decode('utf-8'))
+                        results = data.get("results", [])
+                        if results and results[0].get("poster_path"):
+                            return f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
+                except Exception:
+                    continue
     except Exception:
         pass
     return ""
@@ -69,12 +85,12 @@ def get_best_poster_from_page(page, base_url):
     return ""
 
 def fix_added_movies_only():
-    """فحص وتعديل الأفلام التي أضافها هذا السكريبت فقط بناءً على تصنيف category_type"""
-    print(f"\n🛠️ === فحص الأفلام المضافة بالسكربت فقط (Category: {CATEGORY_TAG}) ===", flush=True)
+    """تعديل الأفلام المضافة بواسطة السكربت فقط وجلب البوسترات لها"""
+    print(f"\n🛠️ === مراجعة الأفلام المضافة بالسكربت ({CATEGORY_TAG}) ===", flush=True)
     
     response = supabase.table("movies_cima").select("id, title, poster_url").eq("category_type", CATEGORY_TAG).execute()
     movies = response.data or []
-    print(f"📊 تم العثور على {len(movies)} فيلم أضافها السكريبت للمراجعة...", flush=True)
+    print(f"📊 فحص {len(movies)} فيلم لجلب البوسترات المفقودة وتعديل الأسماء...", flush=True)
 
     seen_titles = set()
 
@@ -87,11 +103,11 @@ def fix_added_movies_only():
         if not clean_name:
             continue
 
-        # حذف التكرار داخل نفس المجموعة
+        # حذف السجل المكرر فوراً لتجنب خطأ تعارض الاسم في قاعدة البيانات
         if clean_name in seen_titles:
             try:
                 supabase.table("movies_cima").delete().eq("id", movie_id).execute()
-                print(f"🗑️ حذف فيلم مكرر: {clean_name}", flush=True)
+                print(f"🗑️ تم حذف فيلم مكرر: {clean_name}", flush=True)
             except Exception:
                 pass
             continue
@@ -99,10 +115,11 @@ def fix_added_movies_only():
         seen_titles.add(clean_name)
 
         new_poster = current_poster
+        # إذا لم يكن البوستر مسحوباً من TMDB مسبقاً، يتم البحث عنه
         if not current_poster or "image.tmdb" not in current_poster:
-            poster_tmdb = fetch_tmdb_poster(clean_name)
-            if poster_tmdb:
-                new_poster = poster_tmdb
+            found_poster = fetch_tmdb_poster(clean_name)
+            if found_poster:
+                new_poster = found_poster
 
         update_data = {}
         if clean_name != raw_title:
@@ -113,14 +130,16 @@ def fix_added_movies_only():
         if update_data:
             try:
                 supabase.table("movies_cima").update(update_data).eq("id", movie_id).execute()
-                p_status = "✔️ تم تحديث البوستر" if "poster_url" in update_data else "لم يتغير"
+                p_status = "البوستر: تم التحديث ✔️" if "poster_url" in update_data else "البوستر: لم يتغير"
                 print(f"✅ {clean_name} | {p_status}", flush=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ خطأ أثناء تحديث {clean_name}: {e}", flush=True)
+        else:
+            print(f"⏭️ {clean_name} | البيانات مكتملة بالفعل", flush=True)
 
 def crawl_new_movies():
-    """متابعة سحب باقي الأفلام الجديدة من الموقع"""
-    print("\n🚀 === بدء استكمال سحب الأفلام الجديدة وسيرفراتها ===", flush=True)
+    """استكمال سحب باقي الأفلام الجديدة وصفحات المشاهدة"""
+    print("\n🚀 === بدء سحب الأفلام الجديدة وسيرفراتها ===", flush=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -157,7 +176,7 @@ def crawl_new_movies():
 
             for link in movie_links:
                 try:
-                    # فحص عدم التكرار بالرابط
+                    # فحص عدم وجود الرابط مسبقاً
                     existing = supabase.table("movies_cima").select("id").eq("watch_url", link).execute()
                     if existing.data and len(existing.data) > 0:
                         continue
@@ -171,7 +190,7 @@ def crawl_new_movies():
                     if not movie_title or len(movie_title) < 2 or movie_title in unwanted_words:
                         continue
 
-                    # فحص عدم التكرار بالاسم النظيف
+                    # فحص عدم وجود نفس اسم الفيلم لتجنب تعارض الـ Unique Constraint
                     existing_by_title = supabase.table("movies_cima").select("id").eq("title", movie_title).execute()
                     if existing_by_title.data and len(existing_by_title.data) > 0:
                         continue
@@ -182,6 +201,7 @@ def crawl_new_movies():
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
 
+                    # استخراج البوستر عبر TMDB أولاً ثم عبر الصفحة
                     poster_url = fetch_tmdb_poster(movie_title)
                     if not poster_url:
                         poster_url = get_best_poster_from_page(page, link)
@@ -267,7 +287,7 @@ def crawl_new_movies():
                     }
                     
                     supabase.table("movies_cima").upsert(movie_payload, on_conflict="watch_url").execute()
-                    print(f"🎬 أُضيف فيلم جديد: {movie_title} | البوستر: {'✔️' if poster_url else '❌'} | سيرفرات: ({len(watch_servers)})", flush=True)
+                    print(f"🎬 أُضيف فيلم: {movie_title} | البوستر: {'✔️' if poster_url else '❌'} | سيرفرات: ({len(watch_servers)})", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
