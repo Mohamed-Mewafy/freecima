@@ -17,7 +17,6 @@ BASE_DOMAIN = "https://mycimamovie.online"
 MOVIES_CATEGORY_URL = f"{BASE_DOMAIN}/movies.php"
 
 def clean_title(title):
-    # إزالة الكلمات الزائدة واسم الموقع
     pattern = r'(مشاهدة|فيلم|مسلسل|كامل|اون لاين|HD|1080p|720p|4K|مترجم|مدبلج|حصريا|ماي سيما|مايسيما|موقع|mycima)'
     clean = re.sub(pattern, '', title, flags=re.IGNORECASE)
     clean = re.sub(r'[\(\)\[\]\{\}\:\-\|\،]', ' ', clean)
@@ -30,12 +29,12 @@ def extract_year(title):
 
 def get_best_poster(page, base_url="https://mycimamovie.online"):
     try:
-        # 1. فحص الوسم التعريفي أولاً لأنه يعطي الصورة الأصلية بدقة عالية
+        # 1. فحص وسم og:image
         meta_img = page.locator('meta[property="og:image"]').get_attribute("content")
         if meta_img and not any(bad in meta_img.lower() for bad in ['logo', 'icon', 'default', 'banner']):
             return urljoin(base_url, meta_img.strip())
 
-        # 2. فحص عناصر الصور مع دعم التحميل الكسول (Lazy Loading) والروابط النسبية
+        # 2. فحص عناصر الصور مع دعم التحميل الكسول والمسارات النسبية
         poster_selectors = [
             '.Poster img', '.poster img', '.image img', '.single-poster img',
             '.movie-image img', '.post-thumbnail img', '.thumb img',
@@ -84,7 +83,7 @@ def crawl_movies():
         page.set_default_timeout(25000)
 
         page_num = 1
-        print("\n🚀 === بدء سحب الأفلام مع البوسترات وسيرفرات المشاهدة ===", flush=True)
+        print("\n🚀 === بدء سحب الأفلام مع البوسترات وتفادي تعارض الروابط ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة الأفلام رقم: {page_num}", flush=True)
@@ -96,7 +95,7 @@ def crawl_movies():
                 page_num += 1
                 continue
             
-            # جلب الروابط وتصفية صفحات التصنيفات والقوائم
+            # جلب الروابط وتصفية القوائم والأقسام
             all_page_links = page.eval_on_selector_all('a[href]', "elements => elements.map(e => e.href)")
             movie_links = []
             for l in set(all_page_links):
@@ -109,20 +108,20 @@ def crawl_movies():
 
             for link in movie_links:
                 try:
+                    # 1. التحقق المسبق باستخدام watch_url لتجنب التكرار وتفادي خطأ القيد الفريد
+                    existing = supabase.table("movies_cima").select("id").eq("watch_url", link).execute()
+                    if existing.data and len(existing.data) > 0:
+                        print(f"🔍 الرابط مسجل مسبقاً، تم التخطي: {link}", flush=True)
+                        continue
+
                     page.goto(link, wait_until="domcontentloaded", timeout=25000)
                     
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else ""
                     movie_title = clean_title(raw_title)
                     
-                    # استبعاد أسماء الأقسام والقوائم
+                    # استبعاد أسماء الأقسام والقوائم غير المرغوبة
                     unwanted_words = ["أكشن", "دراما", "رعب", "كوميدي", "رومانسي", "اثارة", "إثارة", "برامج", "انمي", "أنمي", "الفلوس", "واقعي", "حساب", "دخول", "افلام", "أحدث"]
                     if not movie_title or len(movie_title) < 2 or movie_title in unwanted_words:
-                        continue
-
-                    # 1. التحقق من وجود الفيلم مسبقاً في قاعدة البيانات
-                    existing = supabase.table("movies_cima").select("id").eq("title", movie_title).execute()
-                    if existing.data and len(existing.data) > 0:
-                        print(f"🔍 الفيلم موجود مسبقاً: {movie_title}", flush=True)
                         continue
 
                     year = extract_year(raw_title)
@@ -131,10 +130,9 @@ def crawl_movies():
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
 
-                    # استخراج رابط البوستر بدقة مع حل الروابط النسبية
                     poster_url = get_best_poster(page, link)
 
-                    # 2. التوجه إلى صفحة السيرفرات والمشاهدة
+                    # 2. فحص صفحة المشاهدة والسيرفرات
                     watch_button_links = page.eval_on_selector_all('a[href*="watch.php"], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                     
                     watch_page = browser.new_page()
@@ -159,7 +157,6 @@ def crawl_movies():
                     if not server_elements:
                         server_elements = watch_page.locator('div[class*="server"] button, div[class*="server"] a, li[data-url], li[data-embed]').all()
 
-                    # النقر على كل سيرفر لاستخراج الـ iframe
                     for btn in server_elements:
                         try:
                             s_name = btn.text_content().strip()
@@ -185,7 +182,6 @@ def crawl_movies():
                         except Exception:
                             continue
 
-                    # فحص احتياطي للـ iframe
                     if not watch_servers:
                         time.sleep(1.0)
                         iframe = watch_page.locator("iframe").first
@@ -198,7 +194,7 @@ def crawl_movies():
 
                     watch_page.close()
 
-                    # تخطي الحفظ إذا لم تكن هناك أي سيرفرات
+                    # تخطي الصفحات التي لا تحتوي على أي سيرفرات تشغيل
                     if not watch_servers:
                         continue
 
@@ -218,8 +214,8 @@ def crawl_movies():
                         "category_type": "احدث الافلام"
                     }
                     
-                    # 3. الحفظ في Supabase
-                    res_insert = supabase.table("movies_cima").upsert(movie_payload, on_conflict="title").execute()
+                    # 3. الحفظ في Supabase بناءً على قيد watch_url
+                    res_insert = supabase.table("movies_cima").upsert(movie_payload, on_conflict="watch_url").execute()
                     if res_insert.data:
                         print(f"🎬 تمت إضافة: {movie_title} | البوستر: {'✔️' if poster_url else '❌'} | سيرفرات: ({len(watch_servers)})", flush=True)
 
