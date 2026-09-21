@@ -130,7 +130,6 @@ def fix_only_scraped_movies():
                 pass
             continue
 
-        # حذف التكرارات مباشرة
         if clean_name in seen_titles:
             try:
                 supabase.table("movies_cima").delete().eq("id", m_id).execute()
@@ -162,7 +161,6 @@ def fix_only_scraped_movies():
                 supabase.table("movies_cima").update(update_payload).eq("id", m_id).execute()
                 print(f"✅ تم تحديث بيانات: {clean_name}", flush=True)
             except Exception as e:
-                # إذا حدث تعارض عنوان أثناء التحديث نحذف هذا السجل الزائد
                 if "23505" in str(e) or "unique constraint" in str(e):
                     supabase.table("movies_cima").delete().eq("id", m_id).execute()
                     print(f"🗑️ إزالة تعارض قديم للفيلم: {clean_name}", flush=True)
@@ -231,9 +229,16 @@ def crawl_and_scrape():
                     if not movie_title or is_junk_title(movie_title):
                         continue
 
-                    # فحص وجود الفيلم مسبقاً بالاسم أو بالرابط لمنع تعارض movies_cima_title_key
-                    existing_check = supabase.table("movies_cima").select("id, poster_url, description").or_(f"title.eq.{movie_title},watch_url.eq.{link}").execute()
-                    
+                    # فحص نظيف ومنفصل لتجنب خطأ & في منطق PostgREST
+                    existing_id = None
+                    chk_url = supabase.table("movies_cima").select("id").eq("watch_url", link).execute()
+                    if chk_url.data:
+                        existing_id = chk_url.data[0]["id"]
+                    else:
+                        chk_title = supabase.table("movies_cima").select("id").eq("title", movie_title).execute()
+                        if chk_title.data:
+                            existing_id = chk_title.data[0]["id"]
+
                     final_poster = urljoin(BASE_DOMAIN, card_poster) if card_poster and 'http' not in card_poster else card_poster
                     meta_locator = page.locator('meta[property="og:image"]')
                     if meta_locator.count() > 0:
@@ -250,17 +255,16 @@ def crawl_and_scrape():
                         raw_description = desc_el.text_content().strip()
                     clean_description = clean_movie_story(raw_description)
 
-                    # إذا كان الفيلم مسجلاً مسبقاً، نكتفي بتحديثه عبر المعرف id ولا ننشئ سطراً جديداً
-                    if existing_check.data and len(existing_check.data) > 0:
-                        target_id = existing_check.data[0]["id"]
+                    # إذا كان الفيلم مسجلاً مسبقاً، نحدّث البيانات فقط
+                    if existing_id:
                         supabase.table("movies_cima").update({
+                            "title": movie_title,
                             "poster_url": final_poster,
                             "year": year,
                             "description": clean_description
-                        }).eq("id", target_id).execute()
+                        }).eq("id", existing_id).execute()
                         continue
 
-                    # سحب السيرفرات من صفحة المشاهدة
                     watch_button_links = page.eval_on_selector_all('a[href*="watch.php"], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                     watch_page = browser.new_page()
                     watch_page.set_default_timeout(25000)
@@ -339,9 +343,13 @@ def crawl_and_scrape():
                         "category_type": CATEGORY_TAG
                     }
 
-                    # استخدام on_conflict="title" للتوافق مع القيد الفريد
-                    supabase.table("movies_cima").upsert(movie_payload, on_conflict="title").execute()
-                    print(f"🎬 أُضيف فيلم جديد: {movie_title} ({year}) | القصة: نظيفة | سيرفرات: ({len(watch_servers)})", flush=True)
+                    try:
+                        supabase.table("movies_cima").upsert(movie_payload, on_conflict="title").execute()
+                        print(f"🎬 أُضيف فيلم جديد: {movie_title} ({year}) | سيرفرات: ({len(watch_servers)})", flush=True)
+                    except Exception as ins_err:
+                        if "23505" in str(ins_err) or "unique constraint" in str(ins_err):
+                            supabase.table("movies_cima").update(movie_payload).eq("title", movie_title).execute()
+                            print(f"🔄 تم تحديث السجل المتعارض: {movie_title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ أثناء معالجة فيلم: {e}", flush=True)
