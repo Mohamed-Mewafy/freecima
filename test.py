@@ -86,7 +86,16 @@ def crawl_movies():
                 page_num += 1
                 continue
             
-            links = page.eval_on_selector_all('a[href*="view.php"], a[href*="movie"]', "elements => elements.map(e => e.href)")
+            # حصر الروابط في بطاقات وعناصر الأفلام فقط لتجنب القوائم والتصنيفات
+            links = page.eval_on_selector_all(
+                '.MoviesList a, .GridItem a, .post-box a, div[class*="movie"] a, div[class*="item"] a', 
+                "elements => elements.map(e => e.href)"
+            )
+            
+            # إذا لم يجد عبر المحددات المخصصة، نلجأ للروابط التي تحتوي على view.php أو movie مع تصفية صارمة
+            if not links:
+                links = page.eval_on_selector_all('a[href*="view.php"], a[href*="movie"]', "elements => elements.map(e => e.href)")
+
             if not links:
                 print(f"🏁 وصلت إلى نهاية الصفحات عند الصفحة {page_num}", flush=True)
                 break
@@ -98,10 +107,11 @@ def crawl_movies():
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                     movie_title = clean_title(raw_title)
                     
-                    # 🛑 فلترة العناوين لاستبعاد الأقسام والقوائم الجانبية (مثل My Account وغيرها)
+                    # 🛑 قائمة الفلترة والاستبعاد الشاملة للأقسام والقوائم والكلمات غير المرغوبة
                     unwanted_titles = [
                         "my account", "أحدث الأفلام", "أحدث المسلسلات", "افلام", "مسلسلات", 
-                        "تسجيل", "الرئيسية", "الدخول", "كوميدي", "رعب", "دراما", "أكشن", "تصنيف"
+                        "تسجيل", "الرئيسية", "الدخول", "كوميدي", "رعب", "دراما", "أكشن", "تصنيف",
+                        "تركي", "عربية", "رمضان", "واقعي", "ات ", "ماي سيما", "موقع"
                     ]
                     if not movie_title or len(movie_title) < 2 or any(bad in movie_title.lower() for bad in unwanted_titles):
                         continue
@@ -120,7 +130,7 @@ def crawl_movies():
 
                     poster_url = get_best_poster(page)
 
-                    # 2. الانتظار حتى تحميل قائمة السيرفرات
+                    # 2. الانتظار حتى تحميل قائمة السيرفرات والضغط عليها تفاعلياً
                     try:
                         page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=4000)
                     except Exception:
@@ -134,7 +144,6 @@ def crawl_movies():
                     if not server_elements:
                         server_elements = page.locator('div[class*="server"] button, div[class*="server"] a, li[data-url]').all()
 
-                    # الضغط على كل زر سيرفر واستخراج رابط الـ iframe الخاص به
                     for btn in server_elements:
                         try:
                             s_name = btn.text_content().strip()
