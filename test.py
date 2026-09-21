@@ -1,12 +1,13 @@
 import os
 import re
-import time
-from urllib.parse import urljoin
-from playwright.sync_api import sync_playwright
+import urllib.parse
+import requests
 from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# مفتاح TMDB API المجاني المباشر
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "b6b668045bb658eb025ed996abcb0f56")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("⚠️ يرجى التأكد من ضبط SUPABASE_URL و SUPABASE_KEY في متغيرات البيئة.")
@@ -20,107 +21,81 @@ def clean_title_strict(title):
     clean = re.sub(r'\b(20\d{2}|19\d{2})\b', '', clean)
     return " ".join(clean.split()).strip()
 
-def get_best_poster_deep(page, base_url):
+def fetch_poster_from_tmdb(title):
+    """جلب بوستر رسمي عالي الدقة عبر TMDB"""
     try:
-        # 1. الوسم التعريفي الأساسي
-        meta_img = page.locator('meta[property="og:image"]').get_attribute("content")
-        if meta_img and not any(bad in meta_img.lower() for bad in ['logo', 'icon', 'default', 'banner']):
-            return urljoin(base_url, meta_img.strip())
+        query = urllib.parse.quote(title)
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}&language=ar"
+        res = requests.get(url, timeout=10).json()
+        results = res.get("results", [])
+        
+        # إن لم يجد باللغة العربية نبحث باللغة الأصلية
+        if not results:
+            url_en = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}"
+            res = requests.get(url_en, timeout=10).json()
+            results = res.get("results", [])
 
-        # 2. البحث داخل عناصر الصور المختلفة
-        img_locators = page.locator('.Poster img, .poster img, .image img, .single-poster img, .movie-image img, article img, .post-thumbnail img, .thumb img').all()
-        for img in img_locators:
-            for attr in ['data-src', 'data-lazy-src', 'data-original', 'src']:
-                val = img.get_attribute(attr)
-                if val:
-                    candidate = val.strip().split()[0]
-                    if candidate and not any(bad in candidate.lower() for bad in ['logo', 'avatar', 'icon', 'svg', 'data:image']):
-                        return urljoin(base_url, candidate)
-
-        # 3. فحص الخلفيات
-        bg_elements = page.locator('.Poster, .poster, .single-poster, [style*="background-image"]').all()
-        for bg in bg_elements:
-            style = bg.get_attribute('style') or ''
-            match = re.search(r'url\([\'"]?(.*?)[\'"]?\)', style)
-            if match:
-                candidate = match.group(1).strip()
-                if candidate and not any(bad in candidate.lower() for bad in ['logo', 'icon', 'default']):
-                    return urljoin(base_url, candidate)
+        if results and results[0].get("poster_path"):
+            poster_path = results[0]["poster_path"]
+            return f"https://image.tmdb.org/t/p/w500{poster_path}"
     except Exception:
         pass
     return ""
 
-def fix_existing_movies():
-    response = supabase.table("movies_cima").select("id, title, watch_url, poster_url").execute()
+def fix_all_movies():
+    print("🚀 جاري جلب جميع الأفلام من قاعدة البيانات لتصحيح العناوين والبوسترات...", flush=True)
+    response = supabase.table("movies_cima").select("id, title, poster_url").execute()
     movies = response.data or []
-    
-    print(f"🔄 جاري مراجعة وتحديث {len(movies)} فيلم في قاعدة البيانات مع معالجة التكرار...", flush=True)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = context.new_page()
-        page.set_default_timeout(25000)
+    print(f"📊 تم العثور على {len(movies)} فيلم، جاري المعالجة السريعة...", flush=True)
 
-        for movie in movies:
-            movie_id = movie["id"]
-            current_title = movie.get("title", "")
-            watch_url = movie.get("watch_url")
-            current_poster = movie.get("poster_url", "")
+    seen_titles = set()
 
-            new_title = clean_title_strict(current_title)
-            new_poster = current_poster
+    for movie in movies:
+        movie_id = movie["id"]
+        raw_title = movie.get("title", "")
+        current_poster = movie.get("poster_url") or ""
 
-            if watch_url:
-                try:
-                    page.goto(watch_url, wait_until="domcontentloaded", timeout=25000)
-                    time.sleep(0.5)
+        clean_name = clean_title_strict(raw_title)
+        if not clean_name:
+            continue
 
-                    h1_el = page.locator('h1').first
-                    if h1_el.count() > 0:
-                        raw_h1 = h1_el.text_content().strip()
-                        new_title = clean_title_strict(raw_h1)
+        # إذا تكرر نفس العنوان، نحذف السجل الزائد لمنع خطأ Unique Constraint
+        if clean_name in seen_titles:
+            print(f"🗑️ حذف نسخة مكررة للفيلم: {clean_name} (ID: {movie_id})", flush=True)
+            try:
+                supabase.table("movies_cima").delete().eq("id", movie_id).execute()
+            except Exception:
+                pass
+            continue
 
-                    fetched_poster = get_best_poster_deep(page, watch_url)
-                    if fetched_poster:
-                        new_poster = fetched_poster
-                except Exception as e:
-                    print(f"⚠️ تعذر فتح {watch_url}: {e}", flush=True)
+        seen_titles.add(clean_name)
 
-            update_data = {}
-            if new_title and new_title != current_title:
-                update_data["title"] = new_title
+        # جلب البوستر الجديد إذا كان مفقوداً أو صورة فارغة
+        new_poster = current_poster
+        if not current_poster or "image.tmdb" not in current_poster:
+            tmdb_poster = fetch_poster_from_tmdb(clean_name)
+            if tmdb_poster:
+                new_poster = tmdb_poster
 
-            if new_poster and new_poster != current_poster:
-                update_data["poster_url"] = new_poster
+        # تجهيز التحديث
+        update_data = {}
+        if clean_name != raw_title:
+            update_data["title"] = clean_name
+        if new_poster and new_poster != current_poster:
+            update_data["poster_url"] = new_poster
 
-            if update_data:
-                try:
-                    supabase.table("movies_cima").update(update_data).eq("id", movie_id).execute()
-                    status_poster = "تم تحديث البوستر ✔️" if "poster_url" in update_data else "البوستر لم يتغير"
-                    print(f"✔️ {new_title} | {status_poster}", flush=True)
-                except Exception as db_err:
-                    err_str = str(db_err)
-                    # في حالة وجود فيلم آخر بنفس الاسم مسبقاً، نحذف النسخة المكررة
-                    if "23505" in err_str or "unique constraint" in err_str:
-                        print(f"🗑️ الفيلم مكرر بالفعل ({new_title})، جاري حذف السجل الإضافي ID: {movie_id}", flush=True)
-                        try:
-                            supabase.table("movies_cima").delete().eq("id", movie_id).execute()
-                        except Exception:
-                            pass
-                    else:
-                        print(f"⚠️ خطأ أثناء التحديث: {db_err}", flush=True)
-            else:
-                print(f"⏭️ {current_title} | لم يطرأ تغيير", flush=True)
+        if update_data:
+            try:
+                supabase.table("movies_cima").update(update_data).eq("id", movie_id).execute()
+                p_status = "✔️ تم تحديث البوستر" if "poster_url" in update_data else "لم يتغير البوستر"
+                print(f"✅ {clean_name} | {p_status}", flush=True)
+            except Exception as e:
+                print(f"⚠️ خطأ أثناء تحديث {clean_name}: {e}", flush=True)
+        else:
+            print(f"⏭️ {clean_name} | سليم دون تعديل", flush=True)
 
-        browser.close()
-        print("✨ اكتملت العملية بنجاح!", flush=True)
+    print("\n🎉 تم الانتهاء من تحديث وتنظيف جميع البوسترات والعناوين بنجاح!", flush=True)
 
 if __name__ == "__main__":
-    fix_existing_movies()
+    fix_all_movies()
