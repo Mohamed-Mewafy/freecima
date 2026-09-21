@@ -74,7 +74,7 @@ def crawl_movies():
         page.set_default_timeout(25000)
 
         page_num = 1
-        print("\n🚀 === بدء سحب الأفلام وتجميع كافة السيرفرات إلى Supabase ===", flush=True)
+        print("\n🚀 === بدء سحب الأفلام الحقيقية وتجميع السيرفرات إلى Supabase ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة الأفلام رقم: {page_num}", flush=True)
@@ -97,7 +97,13 @@ def crawl_movies():
                     
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else "بدون عنوان"
                     movie_title = clean_title(raw_title)
-                    if not movie_title:
+                    
+                    # 🛑 فلترة العناوين لاستبعاد الأقسام والقوائم الجانبية (مثل My Account وغيرها)
+                    unwanted_titles = [
+                        "my account", "أحدث الأفلام", "أحدث المسلسلات", "افلام", "مسلسلات", 
+                        "تسجيل", "الرئيسية", "الدخول", "كوميدي", "رعب", "دراما", "أكشن", "تصنيف"
+                    ]
+                    if not movie_title or len(movie_title) < 2 or any(bad in movie_title.lower() for bad in unwanted_titles):
                         continue
 
                     # 1. التحقق من وجود الفيلم مسبقاً في جدول movies_cima
@@ -114,7 +120,7 @@ def crawl_movies():
 
                     poster_url = get_best_poster(page)
 
-                    # 2. الانتظار حتى تحميل قائمة السيرفرات تماماً مثل السكربت القديم
+                    # 2. الانتظار حتى تحميل قائمة السيرفرات
                     try:
                         page.wait_for_selector('.WatchServersList li, .servers-list li, ul.servers-list button', timeout=4000)
                     except Exception:
@@ -124,12 +130,11 @@ def crawl_movies():
                     streaming_links_list = []
                     primary_watch_url = ""
 
-                    # جلب جميع عناصر الأزرار الخاصة بالسيرفرات
                     server_elements = page.locator('.WatchServersList li, .servers-list li, ul.servers-list button, ul.servers-list a, .WatchServers li').all()
                     if not server_elements:
                         server_elements = page.locator('div[class*="server"] button, div[class*="server"] a, li[data-url]').all()
 
-                    # الضغط على كل زر سيرفر على حدة واستخراج الـ iframe الخاص به
+                    # الضغط على كل زر سيرفر واستخراج رابط الـ iframe الخاص به
                     for btn in server_elements:
                         try:
                             s_name = btn.text_content().strip()
@@ -139,7 +144,6 @@ def crawl_movies():
                             if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_texts):
                                 continue
 
-                            # محاكاة الضغط (Click) تماماً مثل السكربت القديم
                             btn.dispatch_event('click')
                             time.sleep(0.6)
 
@@ -156,7 +160,7 @@ def crawl_movies():
                         except Exception:
                             continue
 
-                    # فحص احتياطي في حال عدم وجود أزرار تفاعلية ظاهرة
+                    # فحص احتياطي في حال عدم تفاعل الأزرار
                     if not watch_servers:
                         time.sleep(1.5)
                         iframe = page.locator("iframe").first
