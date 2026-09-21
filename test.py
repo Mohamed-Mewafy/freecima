@@ -95,7 +95,7 @@ def fetch_tmdb_poster_accurate(title, year=None):
     return ""
 
 def fix_only_scraped_movies():
-    print(f"\n🛠️ === فحص وتصحيح أفلام السكربت فقط وتفادي التكرار ===\n", flush=True)
+    print(f"\n🛠️ === المرحلة 1: تدقيق الأفلام المسحوبة وتعديل بياناتها ===\n", flush=True)
 
     res = supabase.table("movies_cima") \
         .select("id, title, description, poster_url, year, watch_url") \
@@ -103,7 +103,7 @@ def fix_only_scraped_movies():
         .execute()
 
     movies = res.data or []
-    print(f"📊 تم العثور على {len(movies)} فيلم مسحوب للمراجعة...", flush=True)
+    print(f"📊 تم فحص {len(movies)} فيلم مسجل مسبقاً...", flush=True)
 
     seen_titles = set()
 
@@ -117,7 +117,7 @@ def fix_only_scraped_movies():
         if is_junk_title(raw_title):
             try:
                 supabase.table("movies_cima").delete().eq("id", m_id).execute()
-                print(f"🗑️ حذف قسم وهمي: {raw_title}", flush=True)
+                print(f"🗑️ حذف تصنيف/قسم وهمي: {raw_title}", flush=True)
             except Exception:
                 pass
             continue
@@ -168,7 +168,7 @@ def fix_only_scraped_movies():
                     print(f"⚠️ خطأ أثناء التحديث: {e}", flush=True)
 
 def crawl_and_scrape():
-    print("\n🚀 === بدء استكمال سحب الأفلام الجديدة وسيرفراتها ===", flush=True)
+    print("\n🚀 === المرحلة 2: بدء استكمال سحب الأفلام الجديدة وسيرفراتها ===", flush=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -184,12 +184,13 @@ def crawl_and_scrape():
         page_num = 1
 
         while True:
-            print(f"\n🔄 جاري فحص صفحة الأفلام رقم: {page_num}", flush=True)
+            print(f"\n📂 ---------------- [ فحص صفحة رقم: {page_num} ] ----------------", flush=True)
             url = f"{MOVIES_CATEGORY_URL}?page={page_num}" if page_num > 1 else MOVIES_CATEGORY_URL
 
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
             except Exception:
+                print(f"⚠️ تعذر فتح الصفحة رقم {page_num}، جاري الانتقال للتالية...", flush=True)
                 page_num += 1
                 continue
 
@@ -213,10 +214,11 @@ def crawl_and_scrape():
             }""")
 
             if not items:
-                print(f"🏁 انتهت قائمة الصفحات عند الصفحة {page_num}", flush=True)
+                print(f"🏁 انتهت قائمة الصفحات تماماً عند الصفحة {page_num}", flush=True)
                 break
 
             unique_items = {item['href']: item['poster'] for item in items}
+            print(f"🔎 عثرت الصفحة على {len(unique_items)} فيلم، جاري المعالجة التفصيلية...", flush=True)
 
             for link, card_poster in unique_items.items():
                 try:
@@ -229,7 +231,7 @@ def crawl_and_scrape():
                     if not movie_title or is_junk_title(movie_title):
                         continue
 
-                    # فحص نظيف ومنفصل لتجنب خطأ & في منطق PostgREST
+                    # فحص وجود الفيلم مسبقاً
                     existing_id = None
                     chk_url = supabase.table("movies_cima").select("id").eq("watch_url", link).execute()
                     if chk_url.data:
@@ -255,7 +257,7 @@ def crawl_and_scrape():
                         raw_description = desc_el.text_content().strip()
                     clean_description = clean_movie_story(raw_description)
 
-                    # إذا كان الفيلم مسجلاً مسبقاً، نحدّث البيانات فقط
+                    # إذا كان الفيلم مضافاً مسبقاً، نكتفي بتحديثه وإعلامك فوراً
                     if existing_id:
                         supabase.table("movies_cima").update({
                             "title": movie_title,
@@ -263,8 +265,11 @@ def crawl_and_scrape():
                             "year": year,
                             "description": clean_description
                         }).eq("id", existing_id).execute()
+                        print(f"🔄 [موجود مسبقاً - تم التحديث]: {movie_title} ({year or 'غير محدد'})", flush=True)
                         continue
 
+                    # سحب السيرفرات لفيلم جديد
+                    print(f"⏳ جاري سحب سيرفرات الفيلم الجديد: {movie_title}...", flush=True)
                     watch_button_links = page.eval_on_selector_all('a[href*="watch.php"], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                     watch_page = browser.new_page()
                     watch_page.set_default_timeout(25000)
@@ -325,6 +330,7 @@ def crawl_and_scrape():
                     watch_page.close()
 
                     if not watch_servers:
+                        print(f"⚠️ تم تخطي {movie_title}: لا توجد سيرفرات تشغيل صالحة.", flush=True)
                         continue
 
                     direct_links_payload = {
@@ -345,11 +351,11 @@ def crawl_and_scrape():
 
                     try:
                         supabase.table("movies_cima").upsert(movie_payload, on_conflict="title").execute()
-                        print(f"🎬 أُضيف فيلم جديد: {movie_title} ({year}) | سيرفرات: ({len(watch_servers)})", flush=True)
+                        print(f"🎬 ✨ تم بنجاح سحب وإضافة فيلم جديد: [{movie_title}] ({year or 'سنة غير محددة'}) | السيرفرات: {len(watch_servers)} سيرفر | البوستر: {'✔️' if final_poster else '❌'}", flush=True)
                     except Exception as ins_err:
                         if "23505" in str(ins_err) or "unique constraint" in str(ins_err):
                             supabase.table("movies_cima").update(movie_payload).eq("title", movie_title).execute()
-                            print(f"🔄 تم تحديث السجل المتعارض: {movie_title}", flush=True)
+                            print(f"🔄 تم تحديث السجل المتعارض للفيلم: {movie_title}", flush=True)
 
                 except Exception as e:
                     print(f"⚠️ خطأ أثناء معالجة فيلم: {e}", flush=True)
