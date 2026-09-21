@@ -21,7 +21,6 @@ BASE_DOMAIN = "https://mycimamovie.online"
 MOVIES_CATEGORY_URL = f"{BASE_DOMAIN}/movies.php"
 CATEGORY_TAG = "احدث الافلام"
 
-# قائمة الكلمات والأقسام التي يجب حذفها نهائياً إذا وُجدت كاسم فيلم
 JUNK_TITLES = {
     "افلام كوميدي", "ات هندي", "أحدث الات", "ات تركي", "ات عربية", "أحدث الحلقات",
     "ات رمضان", "رمضان", "واقعي", "القصص", "انمي", "أنمي", "الفلوس", "برامج",
@@ -48,125 +47,25 @@ def extract_year(title):
     match = re.search(r'\b(20\d{2}|19\d{2})\b', title)
     return int(match.group(1)) if match else None
 
-def fetch_tmdb_poster(title):
+def fetch_tmdb_poster_accurate(title, year=None):
+    """جلب البوستر بدقة عبر TMDB مع التحقق الإجباري من سنة الإنتاج"""
     try:
-        en_part = " ".join(re.findall(r'[a-zA-Z0-9\s]+', title)).strip()
-        ar_part = " ".join(re.findall(r'[\u0600-\u06FF0-9\s]+', title)).strip()
+        query = urllib.parse.quote(title)
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}&language=ar"
+        if year:
+            url += f"&primary_release_year={year}"
 
-        candidates = []
-        if len(en_part) >= 2:
-            candidates.append(en_part)
-        if len(ar_part) >= 2:
-            candidates.append(ar_part)
-        candidates.append(title)
-
-        for q in candidates:
-            encoded_query = urllib.parse.quote(q)
-            urls = [
-                f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={encoded_query}&language=ar",
-                f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={encoded_query}"
-            ]
-            for target_url in urls:
-                try:
-                    req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=4) as res:
-                        data = json.loads(res.read().decode('utf-8'))
-                        results = data.get("results", [])
-                        if results and results[0].get("poster_path"):
-                            return f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
-                except Exception:
-                    continue
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            results = data.get("results", [])
+            if results and results[0].get("poster_path"):
+                return f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
     except Exception:
         pass
     return ""
 
-def get_best_poster_from_page(page, base_url):
-    try:
-        meta_img = page.locator('meta[property="og:image"]').get_attribute("content")
-        if meta_img and not any(bad in meta_img.lower() for bad in ['logo', 'icon', 'default']):
-            return urljoin(base_url, meta_img.strip())
-
-        img_locators = page.locator('.Poster img, .poster img, .image img, .single-poster img, .movie-image img, article img').all()
-        for img in img_locators:
-            for attr in ['data-src', 'data-lazy-src', 'data-original', 'src']:
-                val = img.get_attribute(attr)
-                if val:
-                    candidate = val.strip().split()[0]
-                    if candidate and not any(bad in candidate.lower() for bad in ['logo', 'avatar', 'icon', 'svg']):
-                        return urljoin(base_url, candidate)
-    except Exception:
-        pass
-    return ""
-
-def fix_added_movies_only():
-    """تنظيف قاعدة البيانات من الأقسام وتحديث البوسترات لـ TMDB"""
-    print(f"\n🛠️ === تصفية وتصحيح أفلام السكربت ({CATEGORY_TAG}) ===", flush=True)
-    
-    response = supabase.table("movies_cima").select("id, title, poster_url").eq("category_type", CATEGORY_TAG).execute()
-    movies = response.data or []
-    print(f"📊 عدد السجلات المسترجعة: {len(movies)}", flush=True)
-
-    seen_titles = set()
-
-    for movie in movies:
-        movie_id = movie["id"]
-        raw_title = movie.get("title", "")
-        current_poster = movie.get("poster_url") or ""
-
-        # 1. حذف الأقسام والتصنيفات الوهمية
-        if is_junk_title(raw_title):
-            try:
-                supabase.table("movies_cima").delete().eq("id", movie_id).execute()
-                print(f"🗑️ حذف قسم/تصنيف وهمي: {raw_title}", flush=True)
-            except Exception:
-                pass
-            continue
-
-        clean_name = clean_title_strict(raw_title)
-        if not clean_name or is_junk_title(clean_name):
-            try:
-                supabase.table("movies_cima").delete().eq("id", movie_id).execute()
-            except Exception:
-                pass
-            continue
-
-        # 2. إزالة التكرار
-        if clean_name in seen_titles:
-            try:
-                supabase.table("movies_cima").delete().eq("id", movie_id).execute()
-                print(f"🗑️ حذف مكرر: {clean_name}", flush=True)
-            except Exception:
-                pass
-            continue
-
-        seen_titles.add(clean_name)
-
-        # 3. إجبار تحديث البوستر إذا لم يكن من سيرفرات TMDB الرسمية
-        new_poster = current_poster
-        if not current_poster or "image.tmdb" not in current_poster:
-            found_poster = fetch_tmdb_poster(clean_name)
-            if found_poster:
-                new_poster = found_poster
-
-        update_data = {}
-        if clean_name != raw_title:
-            update_data["title"] = clean_name
-        if new_poster and new_poster != current_poster:
-            update_data["poster_url"] = new_poster
-
-        if update_data:
-            try:
-                supabase.table("movies_cima").update(update_data).eq("id", movie_id).execute()
-                p_status = "✔️ تم تحديث البوستر" if "poster_url" in update_data else "لم يتغير البوستر"
-                print(f"✅ {clean_name} | {p_status}", flush=True)
-            except Exception as e:
-                print(f"⚠️ خطأ أثناء تحديث {clean_name}: {e}", flush=True)
-        else:
-            print(f"⏭️ {clean_name} | مكتمل ببوستر رسمي", flush=True)
-
-def crawl_new_movies():
-    """متابعة سحب الأفلام الجديدة الفعالة فقط"""
-    print("\n🚀 === بدء سحب الأفلام الجديدة وسيرفراتها ===", flush=True)
+def fix_and_crawl():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -180,60 +79,96 @@ def crawl_new_movies():
         page.set_default_timeout(25000)
 
         page_num = 1
+        print("\n🚀 === بدء السحب وربط البوسترات الأصلية من الموقع مباشرة ===", flush=True)
 
         while True:
             print(f"\n🔄 جاري فحص صفحة الأفلام رقم: {page_num}", flush=True)
             url = f"{MOVIES_CATEGORY_URL}?page={page_num}" if page_num > 1 else MOVIES_CATEGORY_URL
-            
+
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
             except Exception:
                 page_num += 1
                 continue
-            
-            all_page_links = page.eval_on_selector_all('a[href]', "elements => elements.map(e => e.href)")
-            movie_links = []
-            for l in set(all_page_links):
-                if any(k in l for k in ['view.php', 'view-movie.php', 'watch.php', 'film/']) and not any(b in l for b in ['genre=', 'category=', 'account', 'login', 'register']):
-                    movie_links.append(l)
 
-            if not movie_links:
+            # سحب بطاقات الأفلام بالكامل (الرابط + صورة البوستر الأصلية المرفقة بالبطاقة)
+            items = page.evaluate("""() => {
+                const results = [];
+                const links = document.querySelectorAll('a[href*="view.php"], a[href*="view-movie.php"], a[href*="watch.php"]');
+                links.forEach(a => {
+                    const href = a.href;
+                    if (href.includes('genre=') || href.includes('category=') || href.includes('account')) return;
+                    
+                    let img = a.querySelector('img');
+                    if (!img && a.parentElement) img = a.parentElement.querySelector('img');
+                    
+                    let imgSrc = '';
+                    if (img) {
+                        imgSrc = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('data-original') || img.src || '';
+                    }
+                    results.push({ href: href, poster: imgSrc });
+                });
+                return results;
+            }""")
+
+            if not items:
                 print(f"🏁 انتهت قائمة الصفحات عند الصفحة {page_num}", flush=True)
                 break
 
-            for link in movie_links:
-                try:
-                    existing = supabase.table("movies_cima").select("id").eq("watch_url", link).execute()
-                    if existing.data and len(existing.data) > 0:
-                        continue
+            # إزالة التكرار
+            unique_items = {item['href']: item['poster'] for item in items}
 
+            for link, card_poster in unique_items.items():
+                try:
                     page.goto(link, wait_until="domcontentloaded", timeout=25000)
-                    
+
                     raw_title = page.locator('h1').first.text_content().strip() if page.locator('h1').count() > 0 else ""
                     movie_title = clean_title_strict(raw_title)
+                    year = extract_year(raw_title)
 
                     if not movie_title or is_junk_title(movie_title):
                         continue
 
-                    existing_by_title = supabase.table("movies_cima").select("id").eq("title", movie_title).execute()
-                    if existing_by_title.data and len(existing_by_title.data) > 0:
+                    # تحديد البوستر الأصلي الدقيق:
+                    # 1. صورة البطاقة الأصلية من الموقع
+                    final_poster = urljoin(BASE_DOMAIN, card_poster) if card_poster and 'http' not in card_poster else card_poster
+
+                    # 2. فحص الوسم التعريفي لصفحة الفيلم إذا لم تتوفر صورة البطاقة
+                    if not final_poster or any(bad in final_poster.lower() for bad in ['logo', 'default', 'icon']):
+                        meta_img = page.locator('meta[property="og:image"]').get_attribute("content")
+                        if meta_img and not any(bad in meta_img.lower() for bad in ['logo', 'icon', 'default']):
+                            final_poster = urljoin(BASE_DOMAIN, meta_img.strip())
+
+                    # 3. التحقق الاحتياطي من TMDB بالاسم وسنة الإنتاج معاً لمنع خلط الأفلام
+                    if not final_poster:
+                        final_poster = fetch_tmdb_poster_accurate(movie_title, year)
+
+                    # التحقق من وجود الفيلم في Supabase للتحديث أو الإضافة
+                    existing = supabase.table("movies_cima").select("id, poster_url").eq("watch_url", link).execute()
+                    
+                    # إذا كان الفيلم موجوداً بالفعل وبوستره غير صحيح أو فارغ، يتم تصحيحه فوراً
+                    if existing.data and len(existing.data) > 0:
+                        db_id = existing.data[0]["id"]
+                        if final_poster and existing.data[0].get("poster_url") != final_poster:
+                            supabase.table("movies_cima").update({
+                                "title": movie_title,
+                                "poster_url": final_poster,
+                                "year": year
+                            }).eq("id", db_id).execute()
+                            print(f"🔄 تم تصحيح البوستر للفيلم الموجود: {movie_title}", flush=True)
                         continue
 
-                    year = extract_year(raw_title)
                     description = "لا يوجد وصف"
                     desc_el = page.locator('.story, .desc, .description, .story-movie').first
                     if desc_el.count() > 0:
                         description = desc_el.text_content().strip()
 
-                    poster_url = fetch_tmdb_poster(movie_title)
-                    if not poster_url:
-                        poster_url = get_best_poster_from_page(page, link)
-
+                    # فتح صفحة المشاهدة وسحب السيرفرات
                     watch_button_links = page.eval_on_selector_all('a[href*="watch.php"], a[href*="play.php"]', "elements => elements.map(e => e.href)")
                     
                     watch_page = browser.new_page()
                     watch_page.set_default_timeout(25000)
-                    
+
                     if watch_button_links:
                         target_watch = watch_button_links[0].replace("watch.php", "play.php")
                         watch_page.goto(target_watch, wait_until="domcontentloaded", timeout=25000)
@@ -257,7 +192,6 @@ def crawl_new_movies():
                         try:
                             s_name = btn.text_content().strip()
                             clean_sname = re.sub(r'\s+', ' ', s_name).strip()
-                            
                             unwanted_btn_texts = ["تسجيل", "دخول", "Close", "×", "بحث", "Sign", "Register", "OK", "تحميل"]
                             if not clean_sname or len(clean_sname) > 25 or any(w in clean_sname for w in unwanted_btn_texts):
                                 continue
@@ -301,24 +235,23 @@ def crawl_new_movies():
 
                     movie_payload = {
                         "title": movie_title,
-                        "poster_url": poster_url,
+                        "poster_url": final_poster,
                         "year": year,
                         "description": description,
                         "watch_url": link,
                         "direct_links": direct_links_payload,
                         "category_type": CATEGORY_TAG
                     }
-                    
+
                     supabase.table("movies_cima").upsert(movie_payload, on_conflict="watch_url").execute()
-                    print(f"🎬 فيلم جديد: {movie_title} | البوستر: {'✔️' if poster_url else '❌'} | سيرفرات: ({len(watch_servers)})", flush=True)
+                    print(f"🎬 أُضيف فيلم جديد: {movie_title} ({year}) | البوستر: {'✔️' if final_poster else '❌'} | سيرفرات: ({len(watch_servers)})", flush=True)
 
                 except Exception as e:
-                    print(f"⚠️ خطأ في معالجة فيلم: {e}", flush=True)
+                    print(f"⚠️ خطأ أثناء معالجة فيلم: {e}", flush=True)
 
             page_num += 1
 
         browser.close()
 
 if __name__ == "__main__":
-    fix_added_movies_only()
-    crawl_new_movies()
+    fix_and_crawl()
